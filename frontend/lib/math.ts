@@ -1,0 +1,202 @@
+import { evaluate } from 'mathjs';
+import { QuestionTemplate, TestResult } from '../types';
+
+export const sanitizeExpression = (formula: string): string => {
+  if (!formula) return '';
+  let sanitized = String(formula).replace(/[{}]/g, '').replace(/[£$]/g, '');
+  
+  // Automatically fix implicit multiplication (e.g., '2x' -> '2 * x')
+  sanitized = sanitized.replace(/(\d)([a-zA-Z])/g, '$1 * $2');
+  
+  // Fix common LLM hallucinations
+  sanitized = sanitized.replace(/Math\./g, ''); // Math.round -> round
+  sanitized = sanitized.replace(/×/g, '*');
+  sanitized = sanitized.replace(/÷/g, '/');
+  sanitized = sanitized.replace(/\*\*/g, '^');
+  
+  // Remove '=' from expressions to prevent accidental boolean evaluation
+  sanitized = sanitized.replace(/=/g, '');
+  
+  return sanitized;
+};
+
+export const sanitizeConstraint = (formula: string): string => {
+  if (!formula) return '';
+  let sanitized = String(formula).replace(/[{}]/g, '').replace(/[£$]/g, '');
+  
+  sanitized = sanitized.replace(/(\d)([a-zA-Z])/g, '$1 * $2');
+  sanitized = sanitized.replace(/Math\./g, '');
+  sanitized = sanitized.replace(/×/g, '*');
+  sanitized = sanitized.replace(/÷/g, '/');
+  sanitized = sanitized.replace(/\*\*/g, '^');
+  
+  // Replace single '=' with '==' for mathjs constraint evaluation, ignoring '==', '!=', '>=', '<='
+  sanitized = sanitized.replace(/(?<![=!<>])=(?!=)/g, '==');
+  
+  // Fix strict equality/inequality to standard equality for mathjs
+  sanitized = sanitized.replace(/===/g, '==');
+  sanitized = sanitized.replace(/!==/g, '!=');
+  
+  return sanitized;
+};
+
+const generateRandomValue = (min: number, max: number, step: number): number => {
+  // Fallback to step 1 if LLM provides 0, negative, or invalid step
+  const safeStep = (typeof step !== 'number' || step <= 0 || isNaN(step)) ? 1 : step;
+  
+  // Ensure min/max are numbers and correctly ordered
+  const numMin = Number(min) || 0;
+  const numMax = Number(max) || 0;
+  const actualMin = Math.min(numMin, numMax);
+  const actualMax = Math.max(numMin, numMax);
+  
+  const range = actualMax - actualMin;
+  const steps = Math.floor(range / safeStep);
+  const randomStep = Math.floor(Math.random() * (steps + 1));
+  
+  // Fix floating point precision issues with step
+  return Number((actualMin + randomStep * safeStep).toFixed(10));
+};
+
+// Helper to fix floating point inaccuracies (e.g., 0.1 + 0.2 = 0.30000000000000004)
+const fixFloat = (num: any): any => {
+  if (typeof num === 'number') {
+    return Number(Math.round(Number(num + 'e5')) + 'e-5'); // Round to 5 decimal places
+  }
+  return num;
+};
+
+export const runMonteCarloTest = (template: QuestionTemplate): TestResult => {
+  const ITERATIONS = 50;
+  const MAX_ATTEMPTS_PER_ITERATION = 1000;
+  const errors: string[] = [];
+
+  const variableBounds = template.variable_bounds || [];
+  const distractorLogic = template.distractor_logic || [];
+  const distractorCollisions = new Array(distractorLogic.length).fill(0);
+  const isEnglishSection = template.section.startsWith('English');
+
+  if (!template.correct_answer_logic || template.correct_answer_logic.trim() === '') {
+    return { passed: false, errors: ["Correct answer logic is empty."], lastRunTimestamp: Date.now() };
+  }
+
+  // 1. Check SVG requirements
+  if (template.svg_template && template.svg_template.trim() !== '') {
+    if (!template.svg_template.includes('Diagram NOT drawn to scale')) {
+      errors.push('SVG Error: Missing "Diagram NOT drawn to scale" disclaimer.');
+    }
+  }
+
+  for (let i = 0; i < ITERATIONS; i++) {
+    let scope: Record<string, number> = {};
+    let validScopeFound = false;
+    let attempts = 0;
+    const constraintErrors = new Set<string>();
+
+    // Generate valid scope respecting constraints
+    while (attempts < MAX_ATTEMPTS_PER_ITERATION) {
+      scope = {};
+      variableBounds.forEach(bound => {
+        scope[bound.name] = generateRandomValue(bound.min, bound.max, bound.step);
+      });
+
+      let constraintsPassed = true;
+      if (template.constraints && template.constraints.length > 0) {
+        for (const constraint of template.constraints) {
+          try {
+            const sanitizedConstraint = sanitizeConstraint(constraint);
+            const result = evaluate(sanitizedConstraint, scope);
+            if (!result) {
+              constraintsPassed = false;
+              break;
+            }
+          } catch (e) {
+            constraintsPassed = false;
+            constraintErrors.add(`Syntax Error in Constraint '${constraint}': ${e instanceof Error ? e.message : String(e)}`);
+            break;
+          }
+        }
+      }
+
+      if (constraintsPassed) {
+        validScopeFound = true;
+        break;
+      }
+      attempts++;
+    }
+
+    if (!validScopeFound) {
+      const boundsStr = variableBounds.map(v => `${v.name}[${v.min}-${v.max}]`).join(', ');
+      const constraintsStr = template.constraints && template.constraints.length > 0 ? template.constraints.join(' AND ') : 'None';
+      errors.push(`Constraint Exhaustion: Could not find valid variables after ${MAX_ATTEMPTS_PER_ITERATION} attempts. Bounds: ${boundsStr}. Constraints: ${constraintsStr}. Ensure bounds allow constraints to be mathematically possible.`);
+      if (constraintErrors.size > 0) {
+        errors.push(...Array.from(constraintErrors));
+      }
+      return { passed: false, errors: Array.from(new Set(errors)), lastRunTimestamp: Date.now() };
+    }
+
+    // Evaluate formulas
+    try {
+      const sanitizedCorrectLogic = sanitizeExpression(template.correct_answer_logic);
+      let correctAnswer = evaluate(sanitizedCorrectLogic, scope);
+      
+      if (typeof correctAnswer === 'number') {
+        correctAnswer = fixFloat(correctAnswer);
+        if (!isEnglishSection && (!isFinite(correctAnswer) || isNaN(correctAnswer))) {
+          throw new Error(`Formula evaluated to Infinity or NaN (possible division by zero)`);
+        }
+        // Precision Error Check
+        if (!Number.isInteger(correctAnswer)) {
+          const decimals = correctAnswer.toString().split('.')[1];
+          if (decimals && decimals.length > 3) {
+             errors.push(`Precision Error: Correct answer has >3 decimal places (${correctAnswer}) for scope ${JSON.stringify(scope)}`);
+          }
+        }
+      } else if (typeof correctAnswer === 'boolean') {
+        throw new Error(`Formula evaluated to a boolean instead of a number or string. Do not use '=' in logic formulas.`);
+      }
+      // If typeof correctAnswer === 'string' or isEnglishSection, we bypass numeric checks.
+
+      for (let dIdx = 0; dIdx < distractorLogic.length; dIdx++) {
+        const distractor = distractorLogic[dIdx];
+        const expr = typeof distractor === 'string' ? distractor : distractor?.expr;
+        if (!expr) continue;
+
+        const sanitizedDistractorLogic = sanitizeExpression(expr);
+        let distractorAnswer = evaluate(sanitizedDistractorLogic, scope);
+        
+        if (typeof distractorAnswer === 'number') {
+          distractorAnswer = fixFloat(distractorAnswer);
+          if (!isEnglishSection && (!isFinite(distractorAnswer) || isNaN(distractorAnswer))) {
+            throw new Error(`Distractor '${distractor.trap_label || expr}' evaluated to Infinity or NaN`);
+          }
+        } else if (typeof distractorAnswer === 'boolean') {
+          throw new Error(`Distractor '${distractor.trap_label || expr}' evaluated to a boolean.`);
+        }
+
+        if (distractorAnswer === correctAnswer) {
+          distractorCollisions[dIdx]++;
+        }
+      }
+
+    } catch (e: any) {
+      errors.push(`Evaluation Error: ${e.message} for scope ${JSON.stringify(scope)}`);
+      return { passed: false, errors: Array.from(new Set(errors)), lastRunTimestamp: Date.now() };
+    }
+  }
+
+  // Logic Collision Check (>15% of runs per distractor)
+  for (let i = 0; i < distractorCollisions.length; i++) {
+    const rate = distractorCollisions[i] / ITERATIONS;
+    if (rate > 0.15) {
+      errors.push(`Logic Collision: Distractor ${i + 1} matched the correct answer in ${(rate * 100).toFixed(1)}% of runs (>15% threshold).`);
+    }
+  }
+
+  const passed = errors.length === 0;
+  return {
+    passed,
+    errors: Array.from(new Set(errors)), // Deduplicate errors
+    lastRunTimestamp: Date.now()
+  };
+};
