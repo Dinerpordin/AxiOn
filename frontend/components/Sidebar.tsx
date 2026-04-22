@@ -1,0 +1,275 @@
+import React from 'react';
+import { Settings, Play, Upload, Plus, Loader2, FileText, CheckCircle2, ListTodo, Zap, Trash2 } from 'lucide-react';
+import { GenerationParams, Job } from '../types';
+
+interface SidebarProps {
+  params: GenerationParams;
+  onParamsChange: (params: GenerationParams) => void;
+  onGenerate: () => void;
+  isGenerating: boolean;
+  onRunBatchSimulation: () => void;
+  onImportManifest: (event: React.ChangeEvent<HTMLInputElement>) => void;
+  jobQueue: Job[];
+  onImportCsv: (event: React.ChangeEvent<HTMLInputElement>) => void;
+  onLoadJob: (job: Job) => void;
+  onMarkJobComplete: (jobId: string) => void;
+  onRunAllJobs: () => void;
+  isGeneratingBatch: boolean;
+  onClearAll: () => void;
+}
+
+const Sidebar: React.FC<SidebarProps> = ({ 
+  params, 
+  onParamsChange, 
+  onGenerate, 
+  isGenerating, 
+  onRunBatchSimulation, 
+  onImportManifest,
+  jobQueue,
+  onImportCsv,
+  onLoadJob,
+  onMarkJobComplete,
+  onRunAllJobs,
+  isGeneratingBatch,
+  onClearAll
+}) => {
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
+    const { name, value } = e.target;
+    onParamsChange({
+      ...params,
+      [name]: name === 'count' ? parseInt(value, 10) || 1 : value
+    });
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    onGenerate();
+  };
+
+  const pendingJobs = jobQueue.filter(j => j.status === 'pending');
+
+  return (
+    <aside className="w-96 bg-card border-r border-border h-screen flex flex-col fixed left-0 top-0 overflow-y-auto">
+      <div className="p-6 border-b border-border sticky top-0 bg-card z-10">
+        <div className="flex items-center gap-2 text-primary font-bold text-xl mb-1">
+          <Settings className="w-6 h-6" />
+          <span>SSET Factory</span>
+        </div>
+        <p className="text-sm text-muted-foreground">Systematic Smart Exam Templates</p>
+      </div>
+
+      <div className="p-6 flex-1 space-y-8">
+        
+        {/* Generation Form */}
+        <section>
+          <h3 className="font-semibold mb-4 flex items-center gap-2">
+            <Plus className="w-4 h-4" /> Generate Archetypes
+          </h3>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="space-y-1">
+              <label className="text-sm font-medium">Section</label>
+              <select
+                name="section"
+                value={params.section}
+                onChange={handleChange}
+                className="w-full p-2 rounded-md border border-input bg-background text-sm focus:ring-2 focus:ring-ring outline-none"
+              >
+                <option value="Maths">Maths</option>
+                <option value="English SPaG">English SPaG</option>
+                <option value="English Comp">English Comp</option>
+              </select>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-sm font-medium">Topic</label>
+              <input
+                type="text"
+                name="topic"
+                value={params.topic}
+                onChange={handleChange}
+                placeholder="e.g., Ratio & Proportion"
+                className="w-full p-2 rounded-md border border-input bg-background text-sm focus:ring-2 focus:ring-ring outline-none"
+                required
+              />
+            </div>
+
+            <div className="flex gap-4">
+              <div className="space-y-1 flex-1">
+                <label className="text-sm font-medium">Difficulty</label>
+                <select
+                  name="difficulty"
+                  value={params.difficulty}
+                  onChange={handleChange}
+                  className="w-full p-2 rounded-md border border-input bg-background text-sm focus:ring-2 focus:ring-ring outline-none"
+                >
+                  <option value="D1">D1 (Easy)</option>
+                  <option value="D2">D2 (Medium)</option>
+                  <option value="D3">D3 (Hard)</option>
+                </select>
+              </div>
+              <div className="space-y-1 w-24">
+                <label className="text-sm font-medium">Count</label>
+                <input
+                  type="number"
+                  name="count"
+                  min="1"
+                  max="20"
+                  value={params.count}
+                  onChange={handleChange}
+                  className="w-full p-2 rounded-md border border-input bg-background text-sm focus:ring-2 focus:ring-ring outline-none"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-sm font-medium">Additional Instructions</label>
+              <textarea
+                name="instructions"
+                value={params.instructions}
+                onChange={handleChange}
+                placeholder="Specific rules, constraints, or traps..."
+                className="w-full p-2 rounded-md border border-input bg-background text-sm h-20 resize-none focus:ring-2 focus:ring-ring outline-none"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-sm font-medium">Few-Shot JSON (Optional)</label>
+              <textarea
+                name="fewShotJson"
+                value={params.fewShotJson || ''}
+                onChange={handleChange}
+                placeholder="Paste reference JSON structure here..."
+                className="w-full p-2 rounded-md border border-input bg-background text-sm font-mono h-20 resize-none focus:ring-2 focus:ring-ring outline-none"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={isGenerating || isGeneratingBatch}
+              className="w-full bg-primary text-primary-foreground p-2 rounded-md font-medium flex items-center justify-center gap-2 hover:bg-primary/90 transition-colors disabled:opacity-50"
+            >
+              {isGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Settings className="w-4 h-4" />}
+              {isGenerating ? 'Generating...' : 'Generate via AI'}
+            </button>
+          </form>
+        </section>
+
+        {/* Job Queue Section */}
+        <section className="pt-6 border-t border-border">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-semibold flex items-center gap-2">
+              <ListTodo className="w-4 h-4" /> Job Queue
+            </h3>
+            <span className="text-xs bg-secondary text-secondary-foreground px-2 py-1 rounded-full font-medium">
+              {pendingJobs.length} Pending
+            </span>
+          </div>
+          
+          <label className="w-full bg-background border border-input text-foreground p-2 rounded-md text-sm font-medium flex items-center justify-center gap-2 hover:bg-accent transition-colors cursor-pointer mb-4">
+            <FileText className="w-4 h-4" />
+            Import CSV Matrix
+            <input
+              type="file"
+              accept=".csv"
+              className="hidden"
+              onChange={onImportCsv}
+            />
+          </label>
+
+          {pendingJobs.length > 0 && (
+            <button
+              onClick={onRunAllJobs}
+              disabled={isGenerating || isGeneratingBatch}
+              className="w-full bg-accent text-accent-foreground border border-border p-2 rounded-md font-medium flex items-center justify-center gap-2 hover:bg-accent/80 transition-colors disabled:opacity-50 mb-4"
+            >
+              {isGeneratingBatch ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4 text-yellow-500" />}
+              {isGeneratingBatch ? 'Processing Batch...' : 'Auto-Generate All Jobs'}
+            </button>
+          )}
+
+          {pendingJobs.length > 0 ? (
+            <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+              {pendingJobs.map(job => (
+                <div key={job.id} className="bg-muted/50 border border-border rounded-md p-3 text-sm">
+                  <div className="font-medium text-foreground mb-1 truncate" title={job.topic}>
+                    {job.topic || 'Untitled Topic'}
+                  </div>
+                  <div className="flex items-center justify-between text-xs text-muted-foreground mb-3">
+                    <span>{job.section} • {job.difficulty}</span>
+                    <span>{job.targetQuantity} items</span>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => onLoadJob(job)}
+                      disabled={isGeneratingBatch}
+                      className="flex-1 bg-background border border-input hover:bg-accent text-foreground py-1.5 rounded transition-colors disabled:opacity-50"
+                    >
+                      Load
+                    </button>
+                    <button
+                      onClick={() => onMarkJobComplete(job.id)}
+                      disabled={isGeneratingBatch}
+                      className="flex-1 bg-green-100 text-green-700 hover:bg-green-200 py-1.5 rounded transition-colors flex items-center justify-center gap-1 disabled:opacity-50"
+                    >
+                      <CheckCircle2 className="w-3 h-3" /> Done
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-sm text-muted-foreground text-center py-4 bg-muted/30 rounded-md border border-dashed border-border">
+              No pending jobs. Upload a CSV to queue batch generations.
+            </div>
+          )}
+        </section>
+
+        {/* Verification & Data Management */}
+        <section className="pt-6 border-t border-border space-y-6">
+          <div>
+            <h3 className="font-semibold flex items-center gap-2 mb-3">
+              <Play className="w-4 h-4" /> Verification Engine
+            </h3>
+            <button
+              onClick={onRunBatchSimulation}
+              disabled={isGeneratingBatch}
+              className="w-full bg-secondary text-secondary-foreground p-2 rounded-md font-medium flex items-center justify-center gap-2 hover:bg-secondary/80 transition-colors disabled:opacity-50"
+            >
+              Run Batch Simulation
+            </button>
+          </div>
+
+          <div>
+            <h3 className="font-semibold flex items-center gap-2 mb-3">
+              <Upload className="w-4 h-4" /> Data Management
+            </h3>
+            <div className="space-y-2">
+              <label className="w-full bg-background border border-input text-foreground p-2 rounded-md font-medium flex items-center justify-center gap-2 hover:bg-accent transition-colors cursor-pointer">
+                <Upload className="w-4 h-4" />
+                Import JSON Manifest
+                <input
+                  type="file"
+                  accept=".json"
+                  className="hidden"
+                  onChange={onImportManifest}
+                />
+              </label>
+              <button
+                onClick={onClearAll}
+                disabled={isGenerating || isGeneratingBatch}
+                className="w-full bg-destructive/10 text-destructive border border-destructive/20 p-2 rounded-md font-medium flex items-center justify-center gap-2 hover:bg-destructive/20 transition-colors disabled:opacity-50"
+              >
+                <Trash2 className="w-4 h-4" />
+                Clear All Data
+              </button>
+            </div>
+          </div>
+        </section>
+
+      </div>
+    </aside>
+  );
+};
+
+export default Sidebar;
