@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Papa from 'papaparse';
-import Sidebar from './components/Sidebar';
+import Sidebar, { ENGLISH_TOPICS, MATHS_TOPICS } from './components/Sidebar';
 import Header from './components/Header';
 import TemplateCard from './components/TemplateCard';
 import SettingsModal from './components/SettingsModal';
 import LogViewerModal from './components/LogViewerModal';
-import { QuestionTemplate, GenerationParams, AppSettings, Job, LogEntry, BatchProgress } from './types';
+import { QuestionTemplate, GenerationParams, AppSettings, Job, LogEntry, BatchProgress, TopicSelection } from './types';
 import { generateTemplates } from './lib/gemini';
 import { runMonteCarloTest } from './lib/math';
 
@@ -15,7 +15,37 @@ const JOBS_KEY = 'sset_jobs';
 
 const DEFAULT_SETTINGS: AppSettings = {
   model: 'gemini-2.5-flash',
-  systemInstructions: 'You are an elite Curriculum Engineer designing Stage 1 Maths and English assessments (SSET format) for top-tier UK independent schools (11+ level). Your primary function is to generate rigorous, multi-step "Triple-Jump" questions and output them strictly in a highly structured JSON array format.'
+  systemInstructions: `Role & Persona:
+You are an elite Curriculum Engineer designing Stage 1 Maths and English assessments (SSET format) for top-tier UK independent schools (11+ level). Your primary function is to generate rigorous, multi-step "Triple-Jump" questions and output them strictly in a highly structured JSON array format.
+
+CRITICAL RULE 1: Mathematical Safety & Constraints (Zero Failures Allowed)
+The questions you generate will be passed through a 50x Monte Carlo simulation. To prevent simulation crashes, infinite decimals, and logic collisions, you MUST include a "constraints" array containing valid JavaScript expression strings.
+- Prevent Decimals: Use modulo logic to guarantee clean division. Example: If finding Time from Distance and Speed, you MUST include "(D * 60) % S != 0" or "(D * 60) % (S1 - S2) == 0".
+- Prevent Collisions: Distractor logic must never evaluate to the same number. Use rules like "P1 != P2" or "S1 != (2 * R)".
+- Prevent Zero/Negatives: Ensure physical limits. Example: "S1 - Reduction > 5".
+
+CRITICAL RULE 2: Pedagogical Rigor (No Red Herrings)
+- Every data point provided in the question stem MUST be necessary to solve the problem.
+- Never include phrasing like "assuming the price is the same as the start" if it renders previous data points useless.
+- Distractor Logic: Traps must represent genuine cognitive errors (e.g., "Unit conversion omission", "Step 1 Stop", "Inverse operation error"). Do not use meaningless combinations of variables.
+
+CRITICAL RULE 3: JSON Schema Strictness
+You will output nothing but raw JSON. No markdown formatting, no conversational filler. Your output must be a valid JSON array [] containing objects with the EXACT following keys:
+id (string, unique)
+section (string, "Maths" or "English")
+topic (string)
+difficulty (string, usually "D3")
+template_stem (string, using {Variable} syntax)
+variable_bounds (array of objects with "name", "min", "max", "step")
+correct_answer_logic (string, math.js format)
+distractor_logic (array of objects with "expr", "trap_label", "misconception_tag")
+constraints (array of strings, logical rules to prevent math errors)
+skill_tags (array of strings)
+
+CRITICAL RULE 4: Batch Variance
+When asked to generate multiple questions, force distinct contextual scenarios (e.g., cars, boats, runners, trains) and vary the trap formulas. Do not repeat the same question structure with just different variable names.
+
+Constraint Syntax: When using built-in math functions in the logic or constraints, use the raw function names natively (e.g., lcm(A,B), gcd(A,B)). DO NOT prefix them with "math." as it will cause a syntax error in the evaluator.`
 };
 
 const App: React.FC = () => {
@@ -25,13 +55,12 @@ const App: React.FC = () => {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   
   const [generationParams, setGenerationParams] = useState<GenerationParams>({
-    section: 'Maths',
-    topic: 'Fractions',
+    selectedTopics: [MATHS_TOPICS[4]], // Default to Fractions
     difficulty: 'D2',
     count: 3,
     instructions: '',
     fewShotJson: '',
-    mainPrompt: 'Generate 3 Maths templates at D2 difficulty focusing on Fractions.'
+    mainPrompt: 'Generate 3 questions at D2 difficulty. Focus strictly on the following topics: Fractions, Decimals & Percentages'
   });
 
   const [isGenerating, setIsGenerating] = useState(false);
@@ -41,7 +70,6 @@ const App: React.FC = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isLogsOpen, setIsLogsOpen] = useState(false);
   
-  // Custom modal states to bypass sandbox window.confirm restrictions
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [showExportSuccess, setShowExportSuccess] = useState(false);
   
@@ -56,6 +84,28 @@ const App: React.FC = () => {
     }]);
   }, []);
 
+  const logRejection = useCallback((template: QuestionTemplate, reason: string, params?: any) => {
+    const inputStr = params 
+      ? `Topic: ${params.topic || template.topic}\nDifficulty: ${params.difficulty || template.difficulty}\nPrompt: ${params.mainPrompt || 'N/A'}\nInstructions: ${params.instructions || 'N/A'}`
+      : `Topic: ${template.topic}\nDifficulty: ${template.difficulty}`;
+      
+    const message = `Reason: ${reason}
+
+[INPUT]
+${inputStr}
+
+[OUTPUT]
+Stem: ${template.template_stem}
+
+[LOGIC]
+Variables: ${JSON.stringify(template.variable_bounds || (template as any).variables)}
+Constraints: ${JSON.stringify(template.constraints || [])}
+Correct Logic: ${template.correct_answer_logic}
+Distractors: ${JSON.stringify(template.distractor_logic)}`;
+
+    addLog(message, 'error');
+  }, [addLog]);
+
   // Load from local storage on mount
   useEffect(() => {
     const storedTemplates = localStorage.getItem(STORAGE_KEY);
@@ -63,7 +113,11 @@ const App: React.FC = () => {
       try {
         const parsed = JSON.parse(storedTemplates);
         if (Array.isArray(parsed)) {
-          setTemplates(parsed.map(t => ({ ...t, status: t.status || 'pending' })));
+          setTemplates(parsed.map(t => ({ 
+            ...t, 
+            status: t.status || 'pending',
+            variable_bounds: t.variable_bounds || t.variables || [] 
+          })));
         }
       } catch (e) {
         console.error("Failed to parse stored templates", e);
@@ -114,32 +168,36 @@ const App: React.FC = () => {
       setError("Main Prompt cannot be empty.");
       return;
     }
+    if (generationParams.selectedTopics.length === 0) {
+      setError("Please select at least one topic.");
+      return;
+    }
 
     setIsGenerating(true);
     setError(null);
     abortControllerRef.current = new AbortController();
-    addLog(`Manual generation started for topic: ${generationParams.topic}`, 'info');
+    
     try {
       const newTemplates = await generateTemplates(generationParams, settings, addLog, abortControllerRef.current.signal);
       
-      // Yielding Monte Carlo tests to prevent UI freeze
       const tested = [];
       for (const t of newTemplates) {
         if (abortControllerRef.current?.signal.aborted) break;
-        tested.push({ ...t, testResult: runMonteCarloTest(t) });
+        const result = runMonteCarloTest(t);
+        if (!result.passed) {
+          logRejection(t, result.errors.join(' | '), generationParams);
+        }
+        tested.push({ ...t, testResult: result });
         await new Promise(r => setTimeout(r, 10)); // Yield to main thread
       }
 
       if (!abortControllerRef.current?.signal.aborted) {
         setTemplates(prev => [...tested, ...prev]);
-        addLog(`Manual generation completed. Added ${tested.length} templates.`, 'success');
       }
     } catch (err: any) {
-      if (err.message === 'Aborted by user') {
-        addLog('Manual generation stopped by user.', 'warning');
-      } else {
+      if (err.message !== 'Aborted by user') {
         setError(err.message || "Failed to generate templates.");
-        addLog(`Manual generation failed: ${err.message}`, 'error');
+        addLog(`System Error: ${err.message}`, 'error');
       }
     } finally {
       setIsGenerating(false);
@@ -154,61 +212,52 @@ const App: React.FC = () => {
     const signal = abortControllerRef.current.signal;
     
     const pendingJobs = jobQueue.filter(j => j.status === 'pending');
-    addLog(`Starting batch generation for ${pendingJobs.length} jobs.`, 'info');
     setBatchProgress({ current: 0, total: pendingJobs.length, label: 'Initializing...' });
     
     for (let i = 0; i < pendingJobs.length; i++) {
-      if (signal.aborted) {
-        addLog('Batch generation stopped by user.', 'warning');
-        break;
-      }
+      if (signal.aborted) break;
 
       const job = pendingJobs[i];
       setBatchProgress({ current: i, total: pendingJobs.length, label: job.topic });
-      addLog(`Processing Job: ${job.topic} (${job.targetQuantity} items)`, 'info');
       
       try {
-        const params: GenerationParams = {
+        const jobTopicSelection: TopicSelection = {
+          id: `job-topic-${Date.now()}`,
+          label: `${job.section}: ${job.topic}`,
           section: job.section,
-          topic: job.topic,
+          topic: job.topic
+        };
+
+        const params: GenerationParams = {
+          selectedTopics: [jobTopicSelection],
           difficulty: job.difficulty,
           count: job.targetQuantity,
           instructions: job.additionalInstructions,
           fewShotJson: job.fewShotJson,
-          mainPrompt: job.promptForContentEngine || `Generate ${job.targetQuantity} ${job.section} templates at ${job.difficulty} difficulty focusing on ${job.topic}.`
+          mainPrompt: job.promptForContentEngine || `Generate ${job.targetQuantity} questions at ${job.difficulty} difficulty. Focus strictly on the following topics: ${job.topic}.`
         };
 
-        // 1. Generate templates for this job
         const generated = await generateTemplates(params, settings, addLog, signal);
         if (signal.aborted) break;
 
-        // 2. Auto-validate (Monte Carlo test) with yielding
         const tested = [];
         for (const t of generated) {
           if (signal.aborted) break;
           const result = runMonteCarloTest(t);
-          if (result.passed) {
-            addLog(`[Job: ${job.topic}] Template ${t.id} passed simulation.`, 'success');
-          } else {
-            addLog(`[Job: ${job.topic}] Template ${t.id} failed simulation: ${result.errors.join(' | ')}`, 'error');
+          if (!result.passed) {
+            logRejection(t, result.errors.join(' | '), params);
           }
           tested.push({ ...t, testResult: result });
-          await new Promise(r => setTimeout(r, 10)); // Yield to main thread
+          await new Promise(r => setTimeout(r, 10));
         }
 
         if (signal.aborted) break;
 
-        // 3. Add to state progressively
         setTemplates(prev => [...tested, ...prev]);
-
-        // 4. Mark job as complete
         setJobQueue(prev => prev.map(j => j.id === job.id ? { ...j, status: 'completed' } : j));
-        addLog(`Job completed: ${job.topic}`, 'success');
         setBatchProgress({ current: i + 1, total: pendingJobs.length, label: job.topic });
 
-        // 5. Cooldown between jobs to prevent rate limits (HTTP 429)
         if (i < pendingJobs.length - 1) {
-          addLog(`Cooling down for 4 seconds to prevent API rate limits...`, 'info');
           for (let w = 0; w < 40; w++) {
             if (signal.aborted) throw new Error("Aborted by user");
             await new Promise(r => setTimeout(r, 100));
@@ -216,18 +265,15 @@ const App: React.FC = () => {
         }
 
       } catch (err: any) {
-        if (err.message === 'Aborted by user') {
-          addLog(`Batch generation stopped by user during job "${job.topic}".`, 'warning');
-          break;
+        if (err.message !== 'Aborted by user') {
+          const errMsg = `Batch generation stopped. Failed on job "${job.topic}": ${err.message}`;
+          setError(errMsg);
+          addLog(errMsg, 'error');
         }
-        const errMsg = `Batch generation stopped. Failed on job "${job.topic}": ${err.message}`;
-        setError(errMsg);
-        addLog(errMsg, 'error');
-        break; // Stop processing further jobs on error
+        break;
       }
     }
     
-    addLog(`Batch generation process finished.`, 'info');
     setIsGeneratingBatch(false);
     setBatchProgress({ current: 0, total: 0, label: '' });
     abortControllerRef.current = null;
@@ -237,65 +283,66 @@ const App: React.FC = () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
-    // Instantly update UI state to feel responsive
     setIsGenerating(false);
     setIsGeneratingBatch(false);
     setBatchProgress({ current: 0, total: 0, label: '' });
   }, []);
 
   const handleRunTest = useCallback((id: string) => {
-    const template = templates.find(t => t.id === id);
-    if (!template) return;
-
-    addLog(`Running manual simulation for template: ${template.topic} (${template.id})`, 'info');
-    const result = runMonteCarloTest(template);
-    
-    if (result.passed) {
-      addLog(`Simulation passed for template: ${template.id}`, 'success');
-    } else {
-      addLog(`Simulation failed for template: ${template.id}. Errors: ${result.errors.join(' | ')}`, 'error');
-    }
-
-    setTemplates(prev => prev.map(t => t.id === id ? { ...t, testResult: result } : t));
-  }, [templates, addLog]);
+    setTemplates(prev => {
+      const newTemplates = [...prev];
+      const idx = newTemplates.findIndex(t => t.id === id);
+      if (idx !== -1) {
+        const result = runMonteCarloTest(newTemplates[idx]);
+        newTemplates[idx] = { ...newTemplates[idx], testResult: result };
+        if (!result.passed) {
+          logRejection(newTemplates[idx], result.errors.join(' | '));
+        }
+      }
+      return newTemplates;
+    });
+  }, [logRejection]);
 
   const handleRunBatchSimulation = useCallback(async () => {
-    setIsGeneratingBatch(true); // Reuse this state to show loading spinner
-    addLog(`Running batch simulation for all pending templates...`, 'info');
-    let passCount = 0;
-    let failCount = 0;
-
+    setIsGeneratingBatch(true);
     const updatedTemplates = [];
     for (const t of templates) {
       if ((t.status || 'pending') === 'pending') {
         const result = runMonteCarloTest(t);
-        if (result.passed) passCount++; else failCount++;
+        if (!result.passed) {
+          logRejection(t, result.errors.join(' | '));
+        }
         updatedTemplates.push({ ...t, testResult: result });
-        await new Promise(r => setTimeout(r, 10)); // Yield to main thread
+        await new Promise(r => setTimeout(r, 10));
       } else {
         updatedTemplates.push(t);
       }
     }
-
     setTemplates(updatedTemplates);
-    addLog(`Batch simulation complete. Passed: ${passCount}, Failed: ${failCount}`, failCount > 0 ? 'warning' : 'success');
     setIsGeneratingBatch(false);
-  }, [templates, addLog]);
+  }, [templates, logRejection]);
 
   const handleUpdateStatus = useCallback((id: string, status: 'approved' | 'rejected' | 'pending') => {
-    setTemplates(prev => prev.map(t => t.id === id ? { ...t, status } : t));
-    addLog(`Template ${id} status updated to ${status}`, 'info');
-  }, [addLog]);
+    setTemplates(prev => {
+      const newTemplates = [...prev];
+      const idx = newTemplates.findIndex(t => t.id === id);
+      if (idx !== -1) {
+        newTemplates[idx] = { ...newTemplates[idx], status };
+        if (status === 'rejected') {
+          logRejection(newTemplates[idx], 'Manually rejected by user');
+        }
+      }
+      return newTemplates;
+    });
+  }, [logRejection]);
 
   const handleUpdateTemplate = useCallback((updatedTemplate: QuestionTemplate) => {
     setTemplates(prev => prev.map(t => t.id === updatedTemplate.id ? updatedTemplate : t));
-    addLog(`Template ${updatedTemplate.id} logic manually updated.`, 'info');
-  }, [addLog]);
+  }, []);
 
   const handleDeleteTemplate = useCallback((id: string) => {
     setTemplates(prev => prev.filter(t => t.id !== id));
-    addLog(`Template ${id} deleted.`, 'info');
-  }, [addLog]);
+  }, []);
 
   const handleClearAll = useCallback(() => {
     setShowClearConfirm(true);
@@ -307,10 +354,9 @@ const App: React.FC = () => {
     setLogs([]);
     localStorage.removeItem(STORAGE_KEY);
     localStorage.removeItem(JOBS_KEY);
-    addLog("All data and caches cleared by user.", "warning");
     setShowClearConfirm(false);
     setShowExportSuccess(false);
-  }, [addLog]);
+  }, []);
 
   const handleExport = useCallback(async () => {
     const approved = templates.filter(t => (t.status || 'pending') === 'approved');
@@ -318,7 +364,6 @@ const App: React.FC = () => {
 
     const jsonString = JSON.stringify(approved, null, 2);
     
-    // Extract unique parameters for filename
     const sections = Array.from(new Set(approved.map(t => t.section))).map(s => s.replace(/[^a-zA-Z0-9]/g, '')).join('-');
     const difficulties = Array.from(new Set(approved.map(t => t.difficulty))).join('-');
     const uniqueTopics = Array.from(new Set(approved.map(t => t.topic)));
@@ -327,14 +372,13 @@ const App: React.FC = () => {
       : uniqueTopics.map(t => t.replace(/[^a-zA-Z0-9]/g, '')).join('-');
     
     const now = new Date();
-    const dateStr = now.toISOString().split('T')[0]; // YYYY-MM-DD
-    const timeStr = now.toTimeString().split(' ')[0].replace(/:/g, ''); // HHMMSS
+    const dateStr = now.toISOString().split('T')[0];
+    const timeStr = now.toTimeString().split(' ')[0].replace(/:/g, '');
     
     const defaultFileName = `${sections}_${difficulties}_${topicsStr}_${dateStr}_${timeStr}.json`;
     let exportSuccess = false;
 
     try {
-      // Use File System Access API if available (allows folder selection)
       if ('showSaveFilePicker' in window) {
         try {
           const handle = await (window as any).showSaveFilePicker({
@@ -347,17 +391,13 @@ const App: React.FC = () => {
           const writable = await handle.createWritable();
           await writable.write(jsonString);
           await writable.close();
-          addLog(`Exported ${approved.length} approved templates to JSON via File Picker.`, 'success');
           exportSuccess = true;
         } catch (pickerErr: any) {
-          if (pickerErr.name === 'AbortError') {
-            return; // User cancelled the picker, do nothing
-          }
+          if (pickerErr.name === 'AbortError') return;
           console.warn('showSaveFilePicker failed, falling back to Blob download:', pickerErr);
         }
       }
 
-      // Fallback for browsers/sandboxes that don't support showSaveFilePicker
       if (!exportSuccess) {
         const blob = new Blob([jsonString], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
@@ -368,11 +408,9 @@ const App: React.FC = () => {
         downloadAnchorNode.click();
         downloadAnchorNode.remove();
         URL.revokeObjectURL(url);
-        addLog(`Exported ${approved.length} approved templates to JSON (Fallback).`, 'success');
         exportSuccess = true;
       }
 
-      // Prompt to clear data after successful export using custom modal
       if (exportSuccess) {
         setShowExportSuccess(true);
       }
@@ -397,8 +435,11 @@ const App: React.FC = () => {
             const existingIds = new Set(prev.map(t => t.id));
             const newUnique = imported
               .filter(t => !existingIds.has(t.id))
-              .map(t => ({ ...t, status: t.status || 'pending' }));
-            addLog(`Imported ${newUnique.length} new templates from JSON manifest.`, 'success');
+              .map(t => ({ 
+                ...t, 
+                status: t.status || 'pending',
+                variable_bounds: t.variable_bounds || (t as any).variables || []
+              }));
             return [...newUnique, ...prev];
           });
         }
@@ -419,27 +460,41 @@ const App: React.FC = () => {
       header: true,
       skipEmptyLines: true,
       complete: (results) => {
+        const getVal = (row: any, possibleKeys: string[]) => {
+          const key = Object.keys(row).find(k => 
+            possibleKeys.some(pk => k.trim().toLowerCase() === pk.toLowerCase())
+          );
+          return key ? row[key]?.trim() : undefined;
+        };
+
         const newJobs: Job[] = results.data.map((row: any, index) => {
-          let diff = row['Difficulty'];
-          if (!diff && row['Prompt for Content Engine']) {
-            const match = String(row['Prompt for Content Engine']).match(/D[1-3]/i);
+          const promptStr = getVal(row, ['Main_Prompt', 'Main Prompt', 'Prompt for Content Engine', 'Prompt']) || '';
+          let diff = getVal(row, ['Difficulty', 'Level', 'Target Difficulty']);
+          
+          if (!diff && promptStr) {
+            const match = String(promptStr).match(/D[1-3]/i);
             if (match) diff = match[0].toUpperCase();
           }
 
+          const targetQuantityRaw = getVal(row, ['Count', 'Target Quantity', 'Quantity']);
+          const targetQuantity = parseInt(targetQuantityRaw, 10);
+
+          let fewShot = getVal(row, ['Few_Shot_JSON', 'Few-Shot JSON', 'Few Shot', 'Few-Shot', 'JSON']) || '';
+          if (String(fewShot).toLowerCase() === 'none required') fewShot = '';
+
           return {
             id: `job-${Date.now()}-${index}`,
-            section: row['Section'] || 'Maths',
-            topic: row['Topic'] || '',
+            section: getVal(row, ['Section', 'Subject']) || 'Maths',
+            topic: getVal(row, ['Topic', 'Title']) || '',
             difficulty: diff || 'D2',
-            targetQuantity: parseInt(row['Target Quantity']) || 5,
-            promptForContentEngine: row['Prompt for Content Engine'] || '',
-            additionalInstructions: row['Additional Instructions (Constraints & Traps)'] || '',
-            fewShotJson: row['Few-Shot JSON'] === 'None required' ? '' : (row['Few-Shot JSON'] || ''),
+            targetQuantity: isNaN(targetQuantity) ? 5 : targetQuantity,
+            promptForContentEngine: promptStr,
+            additionalInstructions: getVal(row, ['Additional_Instructions', 'Additional Instructions', 'Additional Instructions (Constraints & Traps)', 'Instructions', 'Constraints']) || '',
+            fewShotJson: fewShot,
             status: 'pending'
           };
         });
         setJobQueue(prev => [...prev, ...newJobs]);
-        addLog(`Imported ${newJobs.length} jobs from CSV matrix.`, 'success');
       },
       error: (err) => {
         setError(`Failed to parse CSV: ${err.message}`);
@@ -450,25 +505,33 @@ const App: React.FC = () => {
   }, [addLog]);
 
   const handleLoadJob = useCallback((job: Job) => {
+    const matchedTopic = [...ENGLISH_TOPICS, ...MATHS_TOPICS].find(
+      t => t.topic.toLowerCase() === job.topic.toLowerCase() && t.section.toLowerCase() === job.section.toLowerCase()
+    );
+
+    const topicSelection: TopicSelection = matchedTopic || {
+      id: `custom-${Date.now()}`,
+      label: `${job.section}: ${job.topic}`,
+      section: job.section,
+      topic: job.topic
+    };
+
     setGenerationParams(prev => ({
       ...prev,
-      section: job.section,
-      topic: job.topic,
+      selectedTopics: [topicSelection],
       difficulty: job.difficulty,
       count: job.targetQuantity,
       instructions: job.additionalInstructions,
       fewShotJson: job.fewShotJson,
-      mainPrompt: job.promptForContentEngine || `Generate ${job.targetQuantity} ${job.section} templates at ${job.difficulty} difficulty focusing on ${job.topic}.`
+      mainPrompt: job.promptForContentEngine || `Generate ${job.targetQuantity} questions at ${job.difficulty} difficulty. Focus strictly on the following topics: ${job.topic}.`
     }));
-    addLog(`Loaded job "${job.topic}" into generation form.`, 'info');
-  }, [addLog]);
+  }, []);
 
   const handleMarkJobComplete = useCallback((jobId: string) => {
     setJobQueue(prev => prev.map(job => 
       job.id === jobId ? { ...job, status: 'completed' } : job
     ));
-    addLog(`Manually marked job ${jobId} as complete.`, 'info');
-  }, [addLog]);
+  }, []);
 
   return (
     <div className="min-h-screen bg-background flex">
@@ -539,7 +602,6 @@ const App: React.FC = () => {
           onSave={(newSettings) => {
             setSettings(newSettings);
             setIsSettingsOpen(false);
-            addLog(`Application settings updated.`, 'info');
           }}
           onClose={() => setIsSettingsOpen(false)}
         />
