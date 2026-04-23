@@ -19,23 +19,31 @@ export interface TestResult {
 
 export interface QuestionTemplate {
   id: string;
-  section: 'Maths' | 'English SPaG' | 'English Comp';
+  section: string;
   topic: string;
-  difficulty: 'D1' | 'D2' | 'D3';
+  difficulty: string;
   template_stem: string;
   variable_bounds: VariableBound[];
   constraints?: string[];
   correct_answer_logic: string;
   distractor_logic: DistractorLogic[];
-  svg_template?: string;
+  svg_template?: string | null;
   skill_tags: string[];
-  status: 'pending' | 'approved' | 'rejected';
+  status: 'pending' | 'approved' | 'rejected' | 'published';
+  multiSelect: boolean;
+  selectTwo: boolean;
   testResult?: TestResult;
 }
 
-export interface GenerationParams {
+export interface TopicSelection {
+  id: string;
+  label: string;
   section: string;
   topic: string;
+}
+
+export interface GenerationParams {
+  selectedTopics: TopicSelection[];
   difficulty: string;
   count: number;
   instructions: string;
