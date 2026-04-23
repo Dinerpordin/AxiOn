@@ -13,17 +13,13 @@ const LogViewerModal: React.FC<LogViewerModalProps> = ({ logs, onClose, onClear 
     if (logs.length === 0) return;
 
     const mdContent = [
-      '# SSET Factory Audit Log',
+      '# SSET Factory Rejection Audit Log',
       `*Generated on: ${new Date().toLocaleString()}*`,
       '',
-      '| Timestamp | Type | Message |',
-      '| :--- | :--- | :--- |',
       ...logs.map(l => {
         const time = new Date(l.timestamp).toISOString();
         const type = l.type.toUpperCase();
-        // Escape pipes in message for markdown table
-        const msg = l.message.replace(/\|/g, '\\|').replace(/\n/g, '<br>');
-        return `| ${time} | **${type}** | ${msg} |`;
+        return `## [${time}] ${type}\n\n\`\`\`text\n${l.message}\n\`\`\`\n---`;
       })
     ].join('\n');
 
@@ -31,7 +27,7 @@ const LogViewerModal: React.FC<LogViewerModalProps> = ({ logs, onClose, onClear 
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `sset_audit_log_${new Date().toISOString().split('T')[0]}.md`;
+    a.download = `sset_rejection_log_${new Date().toISOString().split('T')[0]}.md`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -53,7 +49,7 @@ const LogViewerModal: React.FC<LogViewerModalProps> = ({ logs, onClose, onClear 
         <div className="flex items-center justify-between p-4 border-b border-border bg-muted/30">
           <div className="flex items-center gap-2">
             <Terminal className="w-5 h-5 text-primary" />
-            <h2 className="text-lg font-semibold text-foreground">Audit Logs</h2>
+            <h2 className="text-lg font-semibold text-foreground">Rejection Audit Logs</h2>
             <span className="text-xs bg-secondary text-secondary-foreground px-2 py-0.5 rounded-full">
               {logs.length} entries
             </span>
@@ -66,21 +62,23 @@ const LogViewerModal: React.FC<LogViewerModalProps> = ({ logs, onClose, onClear 
         <div className="flex-1 overflow-y-auto p-4 bg-[#0d1117] text-[#c9d1d9] font-mono text-sm">
           {logs.length === 0 ? (
             <div className="h-full flex items-center justify-center text-muted-foreground/50 italic">
-              No logs recorded yet.
+              No rejections or errors recorded yet.
             </div>
           ) : (
-            <div className="space-y-1">
+            <div className="space-y-4">
               {logs.map((log) => (
-                <div key={log.id} className="flex gap-3 hover:bg-white/5 p-1 rounded">
-                  <span className="text-gray-500 shrink-0">
-                    [{new Date(log.timestamp).toLocaleTimeString()}]
-                  </span>
-                  <span className={`shrink-0 w-16 font-bold ${getTypeColor(log.type)}`}>
-                    [{log.type.toUpperCase()}]
-                  </span>
-                  <span className="break-words whitespace-pre-wrap">
+                <div key={log.id} className="border border-white/10 rounded p-3 bg-white/5">
+                  <div className="flex gap-3 mb-2 border-b border-white/10 pb-2">
+                    <span className="text-gray-500 shrink-0">
+                      [{new Date(log.timestamp).toLocaleTimeString()}]
+                    </span>
+                    <span className={`shrink-0 font-bold ${getTypeColor(log.type)}`}>
+                      [{log.type.toUpperCase()}]
+                    </span>
+                  </div>
+                  <div className="whitespace-pre-wrap break-words text-xs leading-relaxed">
                     {log.message}
-                  </span>
+                  </div>
                 </div>
               ))}
             </div>
