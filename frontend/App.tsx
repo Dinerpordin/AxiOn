@@ -40,6 +40,10 @@ const App: React.FC = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isLogsOpen, setIsLogsOpen] = useState(false);
   
+  // Custom modal states to bypass sandbox window.confirm restrictions
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [showExportSuccess, setShowExportSuccess] = useState(false);
+  
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const addLog = useCallback((message: string, type: LogEntry['type'] = 'info') => {
@@ -111,8 +115,19 @@ const App: React.FC = () => {
     addLog(`Manual generation started for topic: ${generationParams.topic}`, 'info');
     try {
       const newTemplates = await generateTemplates(generationParams, settings, addLog, abortControllerRef.current.signal);
-      setTemplates(prev => [...newTemplates, ...prev]);
-      addLog(`Manual generation completed. Added ${newTemplates.length} templates.`, 'success');
+      
+      // Yielding Monte Carlo tests to prevent UI freeze
+      const tested = [];
+      for (const t of newTemplates) {
+        if (abortControllerRef.current?.signal.aborted) break;
+        tested.push({ ...t, testResult: runMonteCarloTest(t) });
+        await new Promise(r => setTimeout(r, 10)); // Yield to main thread
+      }
+
+      if (!abortControllerRef.current?.signal.aborted) {
+        setTemplates(prev => [...tested, ...prev]);
+        addLog(`Manual generation completed. Added ${tested.length} templates.`, 'success');
+      }
     } catch (err: any) {
       if (err.message === 'Aborted by user') {
         addLog('Manual generation stopped by user.', 'warning');
@@ -158,17 +173,23 @@ const App: React.FC = () => {
 
         // 1. Generate templates for this job
         const generated = await generateTemplates(params, settings, addLog, signal);
+        if (signal.aborted) break;
 
-        // 2. Auto-validate (Monte Carlo test)
-        const tested = generated.map(t => {
+        // 2. Auto-validate (Monte Carlo test) with yielding
+        const tested = [];
+        for (const t of generated) {
+          if (signal.aborted) break;
           const result = runMonteCarloTest(t);
           if (result.passed) {
             addLog(`[Job: ${job.topic}] Template ${t.id} passed simulation.`, 'success');
           } else {
             addLog(`[Job: ${job.topic}] Template ${t.id} failed simulation: ${result.errors.join(' | ')}`, 'error');
           }
-          return { ...t, testResult: result };
-        });
+          tested.push({ ...t, testResult: result });
+          await new Promise(r => setTimeout(r, 10)); // Yield to main thread
+        }
+
+        if (signal.aborted) break;
 
         // 3. Add to state progressively
         setTemplates(prev => [...tested, ...prev]);
@@ -182,7 +203,7 @@ const App: React.FC = () => {
         if (i < pendingJobs.length - 1) {
           addLog(`Cooling down for 4 seconds to prevent API rate limits...`, 'info');
           for (let w = 0; w < 40; w++) {
-            if (signal.aborted) break;
+            if (signal.aborted) throw new Error("Aborted by user");
             await new Promise(r => setTimeout(r, 100));
           }
         }
@@ -209,6 +230,10 @@ const App: React.FC = () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
+    // Instantly update UI state to feel responsive
+    setIsGenerating(false);
+    setIsGeneratingBatch(false);
+    setBatchProgress({ current: 0, total: 0, label: '' });
   }, []);
 
   const handleRunTest = useCallback((id: string) => {
@@ -227,22 +252,28 @@ const App: React.FC = () => {
     setTemplates(prev => prev.map(t => t.id === id ? { ...t, testResult: result } : t));
   }, [templates, addLog]);
 
-  const handleRunBatchSimulation = useCallback(() => {
+  const handleRunBatchSimulation = useCallback(async () => {
+    setIsGeneratingBatch(true); // Reuse this state to show loading spinner
     addLog(`Running batch simulation for all pending templates...`, 'info');
     let passCount = 0;
     let failCount = 0;
 
-    setTemplates(prev => prev.map(t => {
+    const updatedTemplates = [];
+    for (const t of templates) {
       if ((t.status || 'pending') === 'pending') {
         const result = runMonteCarloTest(t);
         if (result.passed) passCount++; else failCount++;
-        return { ...t, testResult: result };
+        updatedTemplates.push({ ...t, testResult: result });
+        await new Promise(r => setTimeout(r, 10)); // Yield to main thread
+      } else {
+        updatedTemplates.push(t);
       }
-      return t;
-    }));
+    }
 
+    setTemplates(updatedTemplates);
     addLog(`Batch simulation complete. Passed: ${passCount}, Failed: ${failCount}`, failCount > 0 ? 'warning' : 'success');
-  }, [addLog]);
+    setIsGeneratingBatch(false);
+  }, [templates, addLog]);
 
   const handleUpdateStatus = useCallback((id: string, status: 'approved' | 'rejected' | 'pending') => {
     setTemplates(prev => prev.map(t => t.id === id ? { ...t, status } : t));
@@ -259,12 +290,28 @@ const App: React.FC = () => {
     addLog(`Template ${id} deleted.`, 'info');
   }, [addLog]);
 
+  const handleClearAll = useCallback(() => {
+    setShowClearConfirm(true);
+  }, []);
+
+  const executeClearAll = useCallback(() => {
+    setTemplates([]);
+    setJobQueue([]);
+    setLogs([]);
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(JOBS_KEY);
+    addLog("All data and caches cleared by user.", "warning");
+    setShowClearConfirm(false);
+    setShowExportSuccess(false);
+  }, [addLog]);
+
   const handleExport = useCallback(async () => {
     const approved = templates.filter(t => (t.status || 'pending') === 'approved');
     if (approved.length === 0) return;
 
     const jsonString = JSON.stringify(approved, null, 2);
     const defaultFileName = `sset_export_${new Date().toISOString().split('T')[0]}.json`;
+    let exportSuccess = false;
 
     try {
       // Use File System Access API if available (allows folder selection)
@@ -281,14 +328,17 @@ const App: React.FC = () => {
           await writable.write(jsonString);
           await writable.close();
           addLog(`Exported ${approved.length} approved templates to JSON via File Picker.`, 'success');
+          exportSuccess = true;
         } catch (pickerErr: any) {
           if (pickerErr.name === 'AbortError') {
             return; // User cancelled the picker, do nothing
           }
           console.warn('showSaveFilePicker failed, falling back to Blob download:', pickerErr);
         }
-      } else {
-        // Fallback for browsers/sandboxes that don't support showSaveFilePicker
+      }
+
+      // Fallback for browsers/sandboxes that don't support showSaveFilePicker
+      if (!exportSuccess) {
         const blob = new Blob([jsonString], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const downloadAnchorNode = document.createElement('a');
@@ -299,7 +349,14 @@ const App: React.FC = () => {
         downloadAnchorNode.remove();
         URL.revokeObjectURL(url);
         addLog(`Exported ${approved.length} approved templates to JSON (Fallback).`, 'success');
+        exportSuccess = true;
       }
+
+      // Prompt to clear data after successful export using custom modal
+      if (exportSuccess) {
+        setShowExportSuccess(true);
+      }
+
     } catch (err: any) {
       console.error('Export failed:', err);
       addLog(`Export failed: ${err.message}`, 'error');
@@ -417,6 +474,7 @@ const App: React.FC = () => {
           onExport={handleExport} 
           onOpenSettings={() => setIsSettingsOpen(true)} 
           onOpenLogs={() => setIsLogsOpen(true)}
+          onClearAll={handleClearAll}
         />
         
         <div className="p-6 flex-1 overflow-y-auto">
@@ -472,6 +530,32 @@ const App: React.FC = () => {
           onClose={() => setIsLogsOpen(false)}
           onClear={() => setLogs([])}
         />
+      )}
+
+      {showClearConfirm && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-card border border-border rounded-lg shadow-lg max-w-md w-full p-6">
+            <h3 className="text-lg font-bold mb-2 text-foreground">Clear All Data?</h3>
+            <p className="text-muted-foreground mb-6 text-sm">Are you sure you want to clear all templates, jobs, and logs? This will wipe your local cache and cannot be undone.</p>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setShowClearConfirm(false)} className="px-4 py-2 rounded-md text-sm font-medium hover:bg-muted transition-colors border border-input">Cancel</button>
+              <button onClick={executeClearAll} className="px-4 py-2 bg-destructive text-destructive-foreground rounded-md text-sm font-medium hover:bg-destructive/90 transition-colors">Clear Data</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showExportSuccess && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-card border border-border rounded-lg shadow-lg max-w-md w-full p-6">
+            <h3 className="text-lg font-bold mb-2 text-foreground">Export Successful!</h3>
+            <p className="text-muted-foreground mb-6 text-sm">Your approved templates have been exported. Would you like to clear all data to start fresh?</p>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setShowExportSuccess(false)} className="px-4 py-2 rounded-md text-sm font-medium hover:bg-muted transition-colors border border-input">Keep Data</button>
+              <button onClick={executeClearAll} className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90 transition-colors">Clear Data & Start Fresh</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
