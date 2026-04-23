@@ -68,15 +68,13 @@ export const generateTemplates = async (
   onLog?: (msg: string, type?: 'info' | 'error' | 'success' | 'warning') => void,
   abortSignal?: AbortSignal
 ): Promise<QuestionTemplate[]> => {
-  // Layer 2: Auto-Prompt Compiler
-  const mainPrompt = `Generate ${params.count} ${params.section} templates at ${params.difficulty} difficulty focusing on ${params.topic}.`;
+  
+  const prompt = `${params.mainPrompt}
 
-  const prompt = `${mainPrompt}
-
-Strict Constraints:
+STRICT CONSTRAINTS & INSTRUCTIONS:
 ${params.instructions || 'None'}
 
-Reference Structure (Few-Shot JSON):
+REFERENCE JSON STRUCTURE (FEW-SHOT):
 ${params.fewShotJson || 'None'}
 
 CRITICAL RULE 1: Mathematical Safety & Constraints (Zero Failures Allowed)
@@ -118,7 +116,7 @@ CRITICAL RULE 4: Batch Variance
           systemInstruction: settings.systemInstructions || undefined,
           responseMimeType: 'application/json',
           responseSchema: questionTemplateSchema,
-          temperature: 0.7,
+          temperature: 0.2, // Lowered temperature for logic/math consistency
         }
       });
 
