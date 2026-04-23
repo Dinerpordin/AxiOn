@@ -41,7 +41,7 @@ const TemplateCard: React.FC<TemplateCardProps> = ({ template, onRunTest, onUpda
       {/* Header Section */}
       <div className="p-4 border-b border-border flex items-start justify-between gap-4 bg-muted/30">
         <div className="flex-1">
-          <div className="flex items-center gap-2 mb-2">
+          <div className="flex items-center gap-2 mb-2 flex-wrap">
             <span className="text-xs font-bold px-2 py-1 rounded bg-primary/10 text-primary">
               {template.section}
             </span>
@@ -51,6 +51,16 @@ const TemplateCard: React.FC<TemplateCardProps> = ({ template, onRunTest, onUpda
             <span className="text-xs font-medium px-2 py-1 rounded border border-border">
               {template.difficulty}
             </span>
+            {template.multiSelect && (
+              <span className="text-xs font-medium px-2 py-1 rounded bg-purple-100 text-purple-800 border border-purple-200">
+                Multi-Select
+              </span>
+            )}
+            {template.selectTwo && (
+              <span className="text-xs font-medium px-2 py-1 rounded bg-indigo-100 text-indigo-800 border border-indigo-200">
+                Select Two
+              </span>
+            )}
             <span className={`text-xs font-medium px-2 py-1 rounded border ${statusColors[currentStatus] || statusColors.pending}`}>
               {currentStatus.toUpperCase()}
             </span>
@@ -72,6 +82,7 @@ const TemplateCard: React.FC<TemplateCardProps> = ({ template, onRunTest, onUpda
 
         <div className="flex flex-col gap-2 shrink-0">
           <button
+            type="button"
             onClick={() => onRunTest(template.id)}
             className="p-2 rounded-md bg-secondary hover:bg-secondary/80 text-secondary-foreground transition-colors flex items-center justify-center"
             title="Run Monte Carlo Test"
@@ -80,6 +91,7 @@ const TemplateCard: React.FC<TemplateCardProps> = ({ template, onRunTest, onUpda
           </button>
           <div className="flex gap-1">
             <button
+              type="button"
               onClick={() => onUpdateStatus(template.id, 'approved')}
               className="p-2 rounded-md bg-green-100 hover:bg-green-200 text-green-700 transition-colors"
               title="Approve"
@@ -87,6 +99,7 @@ const TemplateCard: React.FC<TemplateCardProps> = ({ template, onRunTest, onUpda
               <Check className="w-4 h-4" />
             </button>
             <button
+              type="button"
               onClick={() => onUpdateStatus(template.id, 'rejected')}
               className="p-2 rounded-md bg-orange-100 hover:bg-orange-200 text-orange-700 transition-colors"
               title="Reject"
@@ -94,6 +107,7 @@ const TemplateCard: React.FC<TemplateCardProps> = ({ template, onRunTest, onUpda
               <X className="w-4 h-4" />
             </button>
             <button
+              type="button"
               onClick={() => onDeleteTemplate(template.id)}
               className="p-2 rounded-md bg-red-100 hover:bg-red-200 text-red-700 transition-colors"
               title="Delete Template"
@@ -129,6 +143,7 @@ const TemplateCard: React.FC<TemplateCardProps> = ({ template, onRunTest, onUpda
 
       {/* Expand Toggle */}
       <button
+        type="button"
         onClick={() => setIsExpanded(!isExpanded)}
         className="w-full p-2 flex items-center justify-center gap-1 text-xs text-muted-foreground hover:bg-muted/50 transition-colors border-b border-border"
       >
@@ -150,11 +165,11 @@ const TemplateCard: React.FC<TemplateCardProps> = ({ template, onRunTest, onUpda
               {/* Actions */}
               <div className="flex justify-end">
                 {isEditing ? (
-                  <button onClick={handleSave} className="flex items-center gap-1 text-sm bg-primary text-primary-foreground px-3 py-1 rounded">
+                  <button type="button" onClick={handleSave} className="flex items-center gap-1 text-sm bg-primary text-primary-foreground px-3 py-1 rounded">
                     <Save className="w-4 h-4" /> Save Changes
                   </button>
                 ) : (
-                  <button onClick={() => setIsEditing(true)} className="flex items-center gap-1 text-sm bg-secondary text-secondary-foreground px-3 py-1 rounded">
+                  <button type="button" onClick={() => setIsEditing(true)} className="flex items-center gap-1 text-sm bg-secondary text-secondary-foreground px-3 py-1 rounded">
                     <Edit2 className="w-4 h-4" /> Edit Logic
                   </button>
                 )}
@@ -165,7 +180,7 @@ const TemplateCard: React.FC<TemplateCardProps> = ({ template, onRunTest, onUpda
                 <div>
                   <h4 className="text-sm font-semibold mb-2 text-muted-foreground">Variables</h4>
                   <div className="space-y-2">
-                    {(template.variable_bounds || []).map((v, i) => (
+                    {(template.variable_bounds || (template as any).variables || []).map((v, i) => (
                       <div key={i} className="text-sm flex items-center gap-2 bg-muted/30 p-2 rounded">
                         <span className="font-mono font-bold text-primary">{v.name}</span>
                         <span className="text-muted-foreground">
