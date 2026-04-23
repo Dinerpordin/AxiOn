@@ -65,3 +65,9 @@ export interface LogEntry {
   message: string;
   type: 'info' | 'error' | 'success' | 'warning';
 }
+
+export interface BatchProgress {
+  current: number;
+  total: number;
+  label: string;
+}
