@@ -1,6 +1,6 @@
 import React from 'react';
-import { Settings, Play, Upload, Plus, Loader2, FileText, CheckCircle2, ListTodo, Zap, Trash2 } from 'lucide-react';
-import { GenerationParams, Job } from '../types';
+import { Settings, Play, Upload, Plus, Loader2, FileText, CheckCircle2, ListTodo, Zap, XCircle } from 'lucide-react';
+import { GenerationParams, Job, BatchProgress } from '../types';
 
 interface SidebarProps {
   params: GenerationParams;
@@ -15,7 +15,8 @@ interface SidebarProps {
   onMarkJobComplete: (jobId: string) => void;
   onRunAllJobs: () => void;
   isGeneratingBatch: boolean;
-  onClearAll: () => void;
+  batchProgress: BatchProgress;
+  onStopGeneration: () => void;
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ 
@@ -31,7 +32,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   onMarkJobComplete,
   onRunAllJobs,
   isGeneratingBatch,
-  onClearAll
+  batchProgress,
+  onStopGeneration
 }) => {
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
@@ -144,14 +146,25 @@ const Sidebar: React.FC<SidebarProps> = ({
               />
             </div>
 
-            <button
-              type="submit"
-              disabled={isGenerating || isGeneratingBatch}
-              className="w-full bg-primary text-primary-foreground p-2 rounded-md font-medium flex items-center justify-center gap-2 hover:bg-primary/90 transition-colors disabled:opacity-50"
-            >
-              {isGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Settings className="w-4 h-4" />}
-              {isGenerating ? 'Generating...' : 'Generate via AI'}
-            </button>
+            {isGenerating && !isGeneratingBatch ? (
+              <button
+                type="button"
+                onClick={onStopGeneration}
+                className="w-full bg-destructive/10 text-destructive border border-destructive/20 p-2 rounded-md font-medium flex items-center justify-center gap-2 hover:bg-destructive/20 transition-colors"
+              >
+                <XCircle className="w-4 h-4" />
+                Stop Generation
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={isGeneratingBatch}
+                className="w-full bg-primary text-primary-foreground p-2 rounded-md font-medium flex items-center justify-center gap-2 hover:bg-primary/90 transition-colors disabled:opacity-50"
+              >
+                <Settings className="w-4 h-4" />
+                Generate via AI
+              </button>
+            )}
           </form>
         </section>
 
@@ -177,14 +190,36 @@ const Sidebar: React.FC<SidebarProps> = ({
             />
           </label>
 
-          {pendingJobs.length > 0 && (
+          {isGeneratingBatch && (
+            <div className="mb-4 p-4 bg-muted/50 border border-border rounded-md">
+              <div className="flex justify-between text-xs mb-1 font-medium text-foreground">
+                <span className="truncate pr-2">Processing: {batchProgress.label}</span>
+                <span className="shrink-0">{batchProgress.current} / {batchProgress.total}</span>
+              </div>
+              <div className="h-2 bg-secondary rounded-full overflow-hidden mb-3">
+                <div
+                  className="h-full bg-primary transition-all duration-300"
+                  style={{ width: `${batchProgress.total > 0 ? (batchProgress.current / batchProgress.total) * 100 : 0}%` }}
+                />
+              </div>
+              <button
+                onClick={onStopGeneration}
+                className="w-full bg-destructive/10 text-destructive border border-destructive/20 p-2 rounded-md text-sm font-medium flex items-center justify-center gap-2 hover:bg-destructive/20 transition-colors"
+              >
+                <XCircle className="w-4 h-4" />
+                Stop Batch
+              </button>
+            </div>
+          )}
+
+          {!isGeneratingBatch && pendingJobs.length > 0 && (
             <button
               onClick={onRunAllJobs}
-              disabled={isGenerating || isGeneratingBatch}
+              disabled={isGenerating}
               className="w-full bg-accent text-accent-foreground border border-border p-2 rounded-md font-medium flex items-center justify-center gap-2 hover:bg-accent/80 transition-colors disabled:opacity-50 mb-4"
             >
-              {isGeneratingBatch ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4 text-yellow-500" />}
-              {isGeneratingBatch ? 'Processing Batch...' : 'Auto-Generate All Jobs'}
+              <Zap className="w-4 h-4 text-yellow-500" />
+              Auto-Generate All Jobs
             </button>
           )}
 
@@ -255,14 +290,6 @@ const Sidebar: React.FC<SidebarProps> = ({
                   onChange={onImportManifest}
                 />
               </label>
-              <button
-                onClick={onClearAll}
-                disabled={isGenerating || isGeneratingBatch}
-                className="w-full bg-destructive/10 text-destructive border border-destructive/20 p-2 rounded-md font-medium flex items-center justify-center gap-2 hover:bg-destructive/20 transition-colors disabled:opacity-50"
-              >
-                <Trash2 className="w-4 h-4" />
-                Clear All Data
-              </button>
             </div>
           </div>
         </section>
