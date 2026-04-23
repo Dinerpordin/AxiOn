@@ -40,6 +40,7 @@ export interface GenerationParams {
   count: number;
   instructions: string;
   fewShotJson?: string;
+  mainPrompt: string;
 }
 
 export interface AppSettings {
