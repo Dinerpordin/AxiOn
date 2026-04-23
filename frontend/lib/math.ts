@@ -1,4 +1,4 @@
-import { evaluate } from 'mathjs';
+import { evaluate, compile } from 'mathjs';
 import { QuestionTemplate, TestResult } from '../types';
 
 export const sanitizeExpression = (formula: string): string => {
@@ -68,7 +68,7 @@ const fixFloat = (num: any): any => {
 
 export const runMonteCarloTest = (template: QuestionTemplate): TestResult => {
   const ITERATIONS = 50;
-  const MAX_ATTEMPTS_PER_ITERATION = 1000;
+  const MAX_ATTEMPTS_PER_ITERATION = 400; // Reduced to prevent long hangs on impossible constraints
   const errors: string[] = [];
 
   const variableBounds = template.variable_bounds || [];
@@ -87,6 +87,45 @@ export const runMonteCarloTest = (template: QuestionTemplate): TestResult => {
     }
   }
 
+  // 2. Pre-compile expressions for massive performance boost
+  const compiledConstraints: { original: string, compiled: any }[] = [];
+  if (template.constraints) {
+    for (const constraint of template.constraints) {
+      try {
+        compiledConstraints.push({
+          original: constraint,
+          compiled: compile(sanitizeConstraint(constraint))
+        });
+      } catch (e: any) {
+        return { passed: false, errors: [`Syntax Error in Constraint '${constraint}': ${e.message}`], lastRunTimestamp: Date.now() };
+      }
+    }
+  }
+
+  let compiledCorrectLogic: any;
+  try {
+    compiledCorrectLogic = compile(sanitizeExpression(template.correct_answer_logic));
+  } catch (e: any) {
+    return { passed: false, errors: [`Syntax Error in Correct Logic: ${e.message}`], lastRunTimestamp: Date.now() };
+  }
+
+  const compiledDistractors: { distractor: any, compiled: any, index: number }[] = [];
+  for (let i = 0; i < distractorLogic.length; i++) {
+    const distractor = distractorLogic[i];
+    const expr = typeof distractor === 'string' ? distractor : distractor?.expr;
+    if (!expr) continue;
+    try {
+      compiledDistractors.push({
+        distractor,
+        compiled: compile(sanitizeExpression(expr)),
+        index: i
+      });
+    } catch (e: any) {
+      return { passed: false, errors: [`Syntax Error in Distractor '${expr}': ${e.message}`], lastRunTimestamp: Date.now() };
+    }
+  }
+
+  // 3. Run Monte Carlo Simulation
   for (let i = 0; i < ITERATIONS; i++) {
     let scope: Record<string, number> = {};
     let validScopeFound = false;
@@ -101,20 +140,16 @@ export const runMonteCarloTest = (template: QuestionTemplate): TestResult => {
       });
 
       let constraintsPassed = true;
-      if (template.constraints && template.constraints.length > 0) {
-        for (const constraint of template.constraints) {
-          try {
-            const sanitizedConstraint = sanitizeConstraint(constraint);
-            const result = evaluate(sanitizedConstraint, scope);
-            if (!result) {
-              constraintsPassed = false;
-              break;
-            }
-          } catch (e) {
+      for (const c of compiledConstraints) {
+        try {
+          if (!c.compiled.evaluate(scope)) {
             constraintsPassed = false;
-            constraintErrors.add(`Syntax Error in Constraint '${constraint}': ${e instanceof Error ? e.message : String(e)}`);
             break;
           }
+        } catch (e: any) {
+          constraintsPassed = false;
+          constraintErrors.add(`Evaluation Error in Constraint '${c.original}': ${e.message}`);
+          break;
         }
       }
 
@@ -137,8 +172,7 @@ export const runMonteCarloTest = (template: QuestionTemplate): TestResult => {
 
     // Evaluate formulas
     try {
-      const sanitizedCorrectLogic = sanitizeExpression(template.correct_answer_logic);
-      let correctAnswer = evaluate(sanitizedCorrectLogic, scope);
+      let correctAnswer = compiledCorrectLogic.evaluate(scope);
       
       if (typeof correctAnswer === 'number') {
         correctAnswer = fixFloat(correctAnswer);
@@ -155,27 +189,21 @@ export const runMonteCarloTest = (template: QuestionTemplate): TestResult => {
       } else if (typeof correctAnswer === 'boolean') {
         throw new Error(`Formula evaluated to a boolean instead of a number or string. Do not use '=' in logic formulas.`);
       }
-      // If typeof correctAnswer === 'string' or isEnglishSection, we bypass numeric checks.
 
-      for (let dIdx = 0; dIdx < distractorLogic.length; dIdx++) {
-        const distractor = distractorLogic[dIdx];
-        const expr = typeof distractor === 'string' ? distractor : distractor?.expr;
-        if (!expr) continue;
-
-        const sanitizedDistractorLogic = sanitizeExpression(expr);
-        let distractorAnswer = evaluate(sanitizedDistractorLogic, scope);
+      for (const d of compiledDistractors) {
+        let distractorAnswer = d.compiled.evaluate(scope);
         
         if (typeof distractorAnswer === 'number') {
           distractorAnswer = fixFloat(distractorAnswer);
           if (!isEnglishSection && (!isFinite(distractorAnswer) || isNaN(distractorAnswer))) {
-            throw new Error(`Distractor '${distractor.trap_label || expr}' evaluated to Infinity or NaN`);
+            throw new Error(`Distractor '${d.distractor.trap_label || d.distractor.expr}' evaluated to Infinity or NaN`);
           }
         } else if (typeof distractorAnswer === 'boolean') {
-          throw new Error(`Distractor '${distractor.trap_label || expr}' evaluated to a boolean.`);
+          throw new Error(`Distractor '${d.distractor.trap_label || d.distractor.expr}' evaluated to a boolean.`);
         }
 
         if (distractorAnswer === correctAnswer) {
-          distractorCollisions[dIdx]++;
+          distractorCollisions[d.index]++;
         }
       }
 
