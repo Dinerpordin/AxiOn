@@ -65,7 +65,8 @@ const questionTemplateSchema: Schema = {
 export const generateTemplates = async (
   params: GenerationParams, 
   settings: AppSettings,
-  onLog?: (msg: string, type?: 'info' | 'error' | 'success' | 'warning') => void
+  onLog?: (msg: string, type?: 'info' | 'error' | 'success' | 'warning') => void,
+  abortSignal?: AbortSignal
 ): Promise<QuestionTemplate[]> => {
   // Layer 2: Auto-Prompt Compiler
   const mainPrompt = `Generate ${params.count} ${params.section} templates at ${params.difficulty} difficulty focusing on ${params.topic}.`;
@@ -83,6 +84,7 @@ The questions you generate will be passed through a 50x Monte Carlo simulation. 
 - Prevent Decimals: Use modulo logic to guarantee clean division. Example: If finding Time from Distance and Speed, you MUST include "(D * 60) % S == 0" or "(D * 60) % (S1 - S2) == 0".
 - Prevent Collisions: Distractor logic must never evaluate to the same number. Use rules like "P1 != P2" or "S1 != (2 * R)".
 - Prevent Zero/Negatives: Ensure physical limits. Example: "S1 - Reduction > 5".
+- Constraint Syntax: When using built-in math functions in the logic or constraints, use the raw function names natively (e.g., lcm(A,B), gcd(A,B)). DO NOT prefix them with "math." as it will cause a syntax error in the evaluator.
 
 CRITICAL RULE 2: Pedagogical Rigor (No Red Herrings)
 - Every data point provided in the question stem MUST be necessary to solve the problem.
@@ -103,6 +105,8 @@ CRITICAL RULE 4: Batch Variance
   if (onLog) onLog(`Initiating generation for topic: "${params.topic}" (Count: ${params.count}, Difficulty: ${params.difficulty})`, 'info');
 
   while (attempt < MAX_RETRIES) {
+    if (abortSignal?.aborted) throw new Error("Aborted by user");
+    
     try {
       const modelName = settings.model || 'gemini-2.5-flash';
       if (onLog) onLog(`Calling API using model: ${modelName} (Attempt ${attempt + 1}/${MAX_RETRIES})`, 'info');
@@ -117,6 +121,8 @@ CRITICAL RULE 4: Batch Variance
           temperature: 0.7,
         }
       });
+
+      if (abortSignal?.aborted) throw new Error("Aborted by user");
 
       if (!response.text) {
         throw new Error("Empty response from AI");
@@ -134,6 +140,8 @@ CRITICAL RULE 4: Batch Variance
       }));
 
     } catch (error: any) {
+      if (abortSignal?.aborted) throw new Error("Aborted by user");
+      
       attempt++;
       console.error(`Error generating templates (attempt ${attempt}):`, error);
       
@@ -144,8 +152,11 @@ CRITICAL RULE 4: Batch Variance
       
       if (onLog) onLog(`Attempt ${attempt} failed: ${error.message}. Waiting 10 seconds before retrying to prevent rate limits...`, 'warning');
       
-      // Force a 10-second wait before retrying to handle rate limits / timeouts
-      await new Promise(resolve => setTimeout(resolve, 10000));
+      // Interruptible 10-second wait
+      for (let w = 0; w < 100; w++) {
+        if (abortSignal?.aborted) throw new Error("Aborted by user");
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
     }
   }
   
