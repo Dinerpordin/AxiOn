@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Papa from 'papaparse';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import TemplateCard from './components/TemplateCard';
 import SettingsModal from './components/SettingsModal';
 import LogViewerModal from './components/LogViewerModal';
-import { QuestionTemplate, GenerationParams, AppSettings, Job, LogEntry } from './types';
+import { QuestionTemplate, GenerationParams, AppSettings, Job, LogEntry, BatchProgress } from './types';
 import { generateTemplates } from './lib/gemini';
 import { runMonteCarloTest } from './lib/math';
 
@@ -35,9 +35,12 @@ const App: React.FC = () => {
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [isGeneratingBatch, setIsGeneratingBatch] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<BatchProgress>({ current: 0, total: 0, label: '' });
   const [error, setError] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isLogsOpen, setIsLogsOpen] = useState(false);
+  
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const addLog = useCallback((message: string, type: LogEntry['type'] = 'info') => {
     setLogs(prev => [...prev, {
@@ -104,29 +107,45 @@ const App: React.FC = () => {
   const handleGenerate = async () => {
     setIsGenerating(true);
     setError(null);
+    abortControllerRef.current = new AbortController();
     addLog(`Manual generation started for topic: ${generationParams.topic}`, 'info');
     try {
-      const newTemplates = await generateTemplates(generationParams, settings, addLog);
+      const newTemplates = await generateTemplates(generationParams, settings, addLog, abortControllerRef.current.signal);
       setTemplates(prev => [...newTemplates, ...prev]);
       addLog(`Manual generation completed. Added ${newTemplates.length} templates.`, 'success');
     } catch (err: any) {
-      setError(err.message || "Failed to generate templates.");
-      addLog(`Manual generation failed: ${err.message}`, 'error');
+      if (err.message === 'Aborted by user') {
+        addLog('Manual generation stopped by user.', 'warning');
+      } else {
+        setError(err.message || "Failed to generate templates.");
+        addLog(`Manual generation failed: ${err.message}`, 'error');
+      }
     } finally {
       setIsGenerating(false);
+      abortControllerRef.current = null;
     }
   };
 
   const handleRunAllJobs = async () => {
     setIsGeneratingBatch(true);
     setError(null);
+    abortControllerRef.current = new AbortController();
+    const signal = abortControllerRef.current.signal;
     
     const pendingJobs = jobQueue.filter(j => j.status === 'pending');
     addLog(`Starting batch generation for ${pendingJobs.length} jobs.`, 'info');
+    setBatchProgress({ current: 0, total: pendingJobs.length, label: 'Initializing...' });
     
     for (let i = 0; i < pendingJobs.length; i++) {
+      if (signal.aborted) {
+        addLog('Batch generation stopped by user.', 'warning');
+        break;
+      }
+
       const job = pendingJobs[i];
+      setBatchProgress({ current: i, total: pendingJobs.length, label: job.topic });
       addLog(`Processing Job: ${job.topic} (${job.targetQuantity} items)`, 'info');
+      
       try {
         const params: GenerationParams = {
           section: job.section,
@@ -138,7 +157,7 @@ const App: React.FC = () => {
         };
 
         // 1. Generate templates for this job
-        const generated = await generateTemplates(params, settings, addLog);
+        const generated = await generateTemplates(params, settings, addLog, signal);
 
         // 2. Auto-validate (Monte Carlo test)
         const tested = generated.map(t => {
@@ -157,14 +176,22 @@ const App: React.FC = () => {
         // 4. Mark job as complete
         setJobQueue(prev => prev.map(j => j.id === job.id ? { ...j, status: 'completed' } : j));
         addLog(`Job completed: ${job.topic}`, 'success');
+        setBatchProgress({ current: i + 1, total: pendingJobs.length, label: job.topic });
 
         // 5. Cooldown between jobs to prevent rate limits (HTTP 429)
         if (i < pendingJobs.length - 1) {
           addLog(`Cooling down for 4 seconds to prevent API rate limits...`, 'info');
-          await new Promise(r => setTimeout(r, 4000));
+          for (let w = 0; w < 40; w++) {
+            if (signal.aborted) break;
+            await new Promise(r => setTimeout(r, 100));
+          }
         }
 
       } catch (err: any) {
+        if (err.message === 'Aborted by user') {
+          addLog(`Batch generation stopped by user during job "${job.topic}".`, 'warning');
+          break;
+        }
         const errMsg = `Batch generation stopped. Failed on job "${job.topic}": ${err.message}`;
         setError(errMsg);
         addLog(errMsg, 'error');
@@ -174,7 +201,15 @@ const App: React.FC = () => {
     
     addLog(`Batch generation process finished.`, 'info');
     setIsGeneratingBatch(false);
+    setBatchProgress({ current: 0, total: 0, label: '' });
+    abortControllerRef.current = null;
   };
+
+  const handleStopGeneration = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+  }, []);
 
   const handleRunTest = useCallback((id: string) => {
     const template = templates.find(t => t.id === id);
@@ -224,24 +259,12 @@ const App: React.FC = () => {
     addLog(`Template ${id} deleted.`, 'info');
   }, [addLog]);
 
-  const handleClearAll = useCallback(() => {
-    if (window.confirm("Are you sure you want to clear all templates, jobs, and logs? This will wipe your local cache and cannot be undone.")) {
-      setTemplates([]);
-      setJobQueue([]);
-      setLogs([]);
-      localStorage.removeItem(STORAGE_KEY);
-      localStorage.removeItem(JOBS_KEY);
-      addLog("All data and caches cleared by user.", "warning");
-    }
-  }, [addLog]);
-
   const handleExport = useCallback(async () => {
     const approved = templates.filter(t => (t.status || 'pending') === 'approved');
     if (approved.length === 0) return;
 
     const jsonString = JSON.stringify(approved, null, 2);
     const defaultFileName = `sset_export_${new Date().toISOString().split('T')[0]}.json`;
-    let exportSuccess = false;
 
     try {
       // Use File System Access API if available (allows folder selection)
@@ -258,17 +281,14 @@ const App: React.FC = () => {
           await writable.write(jsonString);
           await writable.close();
           addLog(`Exported ${approved.length} approved templates to JSON via File Picker.`, 'success');
-          exportSuccess = true;
         } catch (pickerErr: any) {
           if (pickerErr.name === 'AbortError') {
             return; // User cancelled the picker, do nothing
           }
           console.warn('showSaveFilePicker failed, falling back to Blob download:', pickerErr);
         }
-      }
-
-      // Fallback for browsers/sandboxes that don't support showSaveFilePicker
-      if (!exportSuccess) {
+      } else {
+        // Fallback for browsers/sandboxes that don't support showSaveFilePicker
         const blob = new Blob([jsonString], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const downloadAnchorNode = document.createElement('a');
@@ -279,21 +299,7 @@ const App: React.FC = () => {
         downloadAnchorNode.remove();
         URL.revokeObjectURL(url);
         addLog(`Exported ${approved.length} approved templates to JSON (Fallback).`, 'success');
-        exportSuccess = true;
       }
-
-      // Prompt to clear data after successful export
-      if (exportSuccess) {
-        if (window.confirm("Export successful! Would you like to clear all data to start fresh?")) {
-          setTemplates([]);
-          setJobQueue([]);
-          setLogs([]);
-          localStorage.removeItem(STORAGE_KEY);
-          localStorage.removeItem(JOBS_KEY);
-          addLog("All data cleared after successful export.", "info");
-        }
-      }
-
     } catch (err: any) {
       console.error('Export failed:', err);
       addLog(`Export failed: ${err.message}`, 'error');
@@ -401,7 +407,8 @@ const App: React.FC = () => {
         onMarkJobComplete={handleMarkJobComplete}
         onRunAllJobs={handleRunAllJobs}
         isGeneratingBatch={isGeneratingBatch}
-        onClearAll={handleClearAll}
+        batchProgress={batchProgress}
+        onStopGeneration={handleStopGeneration}
       />
       
       <main className="flex-1 ml-96 flex flex-col min-h-screen">
@@ -410,7 +417,6 @@ const App: React.FC = () => {
           onExport={handleExport} 
           onOpenSettings={() => setIsSettingsOpen(true)} 
           onOpenLogs={() => setIsLogsOpen(true)}
-          onClearAll={handleClearAll}
         />
         
         <div className="p-6 flex-1 overflow-y-auto">
@@ -447,6 +453,7 @@ const App: React.FC = () => {
         </div>
       </main>
 
+      {/* Modals */}
       {isSettingsOpen && (
         <SettingsModal
           settings={settings}
