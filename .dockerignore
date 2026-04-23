@@ -1,0 +1,20 @@
+# Git
+.git
+.gitignore
+
+# Node modules (re-installed inside Docker)
+node_modules
+frontend/node_modules
+backend/node_modules
+
+# Frontend source (built in Docker, not needed in final image)
+frontend/src
+frontend/.env*
+
+# Backend env files — secrets injected via Cloud Run env vars
+backend/.env*
+
+# Misc
+.github
+README.md
+*.md
