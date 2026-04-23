@@ -76,8 +76,7 @@
       const targetUrl = encodeURIComponent(inputUrl);
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const host = window.location.host;
-const proxyUrl = `${protocol}//${host}/ws-proxy?target=${targetUrl}&key=${secretKey}`;
-
+      const proxyUrl = `${protocol}//${host}/ws-proxy?target=${targetUrl}`;
       return new originalWebSocket(proxyUrl, protocols);
     }
     return new originalWebSocket(url, protocols);
@@ -114,7 +113,7 @@ const proxyUrl = `${protocol}//${host}/ws-proxy?target=${targetUrl}&key=${secret
           headers: {
             'Content-Type': 'application/json',
             // Add a random header to identify these proxied requests on the Node.js backend.
-            'X-App-Proxy': 'HRTqP7IemaJh9SHPssgBBx6xMMl95qUh',
+            'X-App-Proxy': 'RDr27QhsUjBCA8KXir5OEbUc1UeREV0H',
           },
           body: JSON.stringify(requestDetails),
         };
