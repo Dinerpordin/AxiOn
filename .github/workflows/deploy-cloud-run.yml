@@ -1,0 +1,39 @@
+name: Deploy to Cloud Run
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: axion-11-plus
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy axion \
+            --image=gcr.io/axion-11-plus/github.com/dinerpordin/axion:116d2256d461c650504a1830c4e429d91f9a607e \
+            --project=axion-11-plus \
+            --region=europe-west1 \
+            --command=node \
+            --args=index.js \
+            --allow-unauthenticated
