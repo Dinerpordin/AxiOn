@@ -81,7 +81,7 @@ ${params.fewShotJson || 'None'}
 
 CRITICAL RULE 1: Mathematical Safety & Constraints (Zero Failures Allowed)
 The questions you generate will be passed through a 50x Monte Carlo simulation. To prevent simulation crashes, infinite decimals, and logic collisions, you MUST include a "constraints" array containing valid JavaScript expression strings.
-- Prevent Decimals: Use modulo logic to guarantee clean division. Example: If finding Time from Distance and Speed, you MUST include "(D * 60) % S == 0" or "(D * 60) % (S1 - S2) == 0".
+- Prevent Decimals: Use modulo logic to guarantee clean division. Example: If finding Time from Distance and Speed, you MUST include "(D * 60) % S != 0" or "(D * 60) % (S1 - S2) == 0".
 - Prevent Collisions: Distractor logic must never evaluate to the same number. Use rules like "P1 != P2" or "S1 != (2 * R)".
 - Prevent Zero/Negatives: Ensure physical limits. Example: "S1 - Reduction > 5".
 - Constraint Syntax: When using built-in math functions in the logic or constraints, use the raw function names natively (e.g., lcm(A,B), gcd(A,B)). DO NOT prefix them with "math." as it will cause a syntax error in the evaluator.
@@ -111,7 +111,7 @@ CRITICAL RULE 4: Batch Variance
       const modelName = settings.model || 'gemini-2.5-flash';
       if (onLog) onLog(`Calling API using model: ${modelName} (Attempt ${attempt + 1}/${MAX_RETRIES})`, 'info');
       
-      const response = await ai.models.generateContent({
+      const generatePromise = ai.models.generateContent({
         model: modelName,
         contents: prompt,
         config: {
@@ -122,7 +122,22 @@ CRITICAL RULE 4: Batch Variance
         }
       });
 
-      if (abortSignal?.aborted) throw new Error("Aborted by user");
+      let response: any;
+
+      // Use Promise.race to instantly reject if the user clicks Stop
+      if (abortSignal) {
+        const abortPromise = new Promise<never>((_, reject) => {
+          if (abortSignal.aborted) reject(new Error("Aborted by user"));
+          abortSignal.addEventListener('abort', () => reject(new Error("Aborted by user")));
+        });
+        
+        // Catch the background promise to prevent unhandled rejections if it fails after abort
+        generatePromise.catch(() => {});
+        
+        response = await Promise.race([generatePromise, abortPromise]);
+      } else {
+        response = await generatePromise;
+      }
 
       if (!response.text) {
         throw new Error("Empty response from AI");
@@ -140,7 +155,9 @@ CRITICAL RULE 4: Batch Variance
       }));
 
     } catch (error: any) {
-      if (abortSignal?.aborted) throw new Error("Aborted by user");
+      if (error.message === "Aborted by user" || abortSignal?.aborted) {
+        throw new Error("Aborted by user");
+      }
       
       attempt++;
       console.error(`Error generating templates (attempt ${attempt}):`, error);
