@@ -71,7 +71,7 @@ export const runMonteCarloTest = (template: QuestionTemplate): TestResult => {
   const MAX_ATTEMPTS_PER_ITERATION = 400; // Reduced to prevent long hangs on impossible constraints
   const errors: string[] = [];
 
-  const variableBounds = template.variable_bounds || [];
+  const variableBounds = template.variable_bounds || (template as any).variables || [];
   const distractorLogic = template.distractor_logic || [];
   const distractorCollisions = new Array(distractorLogic.length).fill(0);
   const isEnglishSection = template.section.startsWith('English');
@@ -81,7 +81,13 @@ export const runMonteCarloTest = (template: QuestionTemplate): TestResult => {
   }
 
   // 1. Check SVG requirements
-  if (template.svg_template && template.svg_template.trim() !== '') {
+  // Only check if svg_template is a valid string and NOT the string "null"
+  if (
+    template.svg_template && 
+    typeof template.svg_template === 'string' && 
+    template.svg_template.trim() !== '' && 
+    template.svg_template.trim().toLowerCase() !== 'null'
+  ) {
     if (!template.svg_template.includes('Diagram NOT drawn to scale')) {
       errors.push('SVG Error: Missing "Diagram NOT drawn to scale" disclaimer.');
     }
