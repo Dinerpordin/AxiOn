@@ -9,7 +9,7 @@ export const sanitizeExpression = (formula: string): string => {
   sanitized = sanitized.replace(/(\d)([a-zA-Z])/g, '$1 * $2');
   
   // Fix common LLM hallucinations
-  sanitized = sanitized.replace(/Math\./g, ''); // Math.round -> round
+  sanitized = sanitized.replace(/math\./gi, ''); // math.lcm -> lcm, Math.round -> round
   sanitized = sanitized.replace(/×/g, '*');
   sanitized = sanitized.replace(/÷/g, '/');
   sanitized = sanitized.replace(/\*\*/g, '^');
@@ -25,7 +25,7 @@ export const sanitizeConstraint = (formula: string): string => {
   let sanitized = String(formula).replace(/[{}]/g, '').replace(/[£$]/g, '');
   
   sanitized = sanitized.replace(/(\d)([a-zA-Z])/g, '$1 * $2');
-  sanitized = sanitized.replace(/Math\./g, '');
+  sanitized = sanitized.replace(/math\./gi, ''); // math.lcm -> lcm, Math.round -> round
   sanitized = sanitized.replace(/×/g, '*');
   sanitized = sanitized.replace(/÷/g, '/');
   sanitized = sanitized.replace(/\*\*/g, '^');
