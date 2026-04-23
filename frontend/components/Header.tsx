@@ -1,5 +1,5 @@
 import React from 'react';
-import { Download, CheckCircle2, Clock, AlertCircle, Settings, Terminal, Trash2 } from 'lucide-react';
+import { Download, CheckCircle2, Clock, AlertCircle, Settings, Terminal } from 'lucide-react';
 import { QuestionTemplate } from '../types';
 
 interface HeaderProps {
@@ -7,10 +7,9 @@ interface HeaderProps {
   onExport: () => void;
   onOpenSettings: () => void;
   onOpenLogs: () => void;
-  onClearAll: () => void;
 }
 
-const Header: React.FC<HeaderProps> = ({ templates, onExport, onOpenSettings, onOpenLogs, onClearAll }) => {
+const Header: React.FC<HeaderProps> = ({ templates, onExport, onOpenSettings, onOpenLogs }) => {
   const total = templates.length;
   const approved = templates.filter(t => (t.status || 'pending') === 'approved').length;
   const pending = templates.filter(t => (t.status || 'pending') === 'pending').length;
@@ -69,14 +68,6 @@ const Header: React.FC<HeaderProps> = ({ templates, onExport, onOpenSettings, on
           <Settings className="w-5 h-5" />
         </button>
         <div className="w-px h-6 bg-border mx-1"></div>
-        <button
-          onClick={onClearAll}
-          className="bg-destructive/10 text-destructive px-4 py-2 rounded-md font-medium flex items-center gap-2 hover:bg-destructive hover:text-destructive-foreground transition-colors"
-          title="Clear All Data"
-        >
-          <Trash2 className="w-4 h-4" />
-          Clear All
-        </button>
         <button
           onClick={onExport}
           disabled={approved === 0}
