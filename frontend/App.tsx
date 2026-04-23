@@ -30,7 +30,8 @@ const App: React.FC = () => {
     difficulty: 'D2',
     count: 3,
     instructions: '',
-    fewShotJson: ''
+    fewShotJson: '',
+    mainPrompt: 'Generate 3 Maths templates at D2 difficulty focusing on Fractions.'
   });
 
   const [isGenerating, setIsGenerating] = useState(false);
@@ -109,6 +110,11 @@ const App: React.FC = () => {
   }, [jobQueue]);
 
   const handleGenerate = async () => {
+    if (!generationParams.mainPrompt.trim()) {
+      setError("Main Prompt cannot be empty.");
+      return;
+    }
+
     setIsGenerating(true);
     setError(null);
     abortControllerRef.current = new AbortController();
@@ -168,7 +174,8 @@ const App: React.FC = () => {
           difficulty: job.difficulty,
           count: job.targetQuantity,
           instructions: job.additionalInstructions,
-          fewShotJson: job.fewShotJson
+          fewShotJson: job.fewShotJson,
+          mainPrompt: job.promptForContentEngine || `Generate ${job.targetQuantity} ${job.section} templates at ${job.difficulty} difficulty focusing on ${job.topic}.`
         };
 
         // 1. Generate templates for this job
@@ -310,7 +317,20 @@ const App: React.FC = () => {
     if (approved.length === 0) return;
 
     const jsonString = JSON.stringify(approved, null, 2);
-    const defaultFileName = `sset_export_${new Date().toISOString().split('T')[0]}.json`;
+    
+    // Extract unique parameters for filename
+    const sections = Array.from(new Set(approved.map(t => t.section))).map(s => s.replace(/[^a-zA-Z0-9]/g, '')).join('-');
+    const difficulties = Array.from(new Set(approved.map(t => t.difficulty))).join('-');
+    const uniqueTopics = Array.from(new Set(approved.map(t => t.topic)));
+    const topicsStr = uniqueTopics.length > 2 
+      ? `${uniqueTopics.slice(0, 2).map(t => t.replace(/[^a-zA-Z0-9]/g, '')).join('-')}-mixed`
+      : uniqueTopics.map(t => t.replace(/[^a-zA-Z0-9]/g, '')).join('-');
+    
+    const now = new Date();
+    const dateStr = now.toISOString().split('T')[0]; // YYYY-MM-DD
+    const timeStr = now.toTimeString().split(' ')[0].replace(/:/g, ''); // HHMMSS
+    
+    const defaultFileName = `${sections}_${difficulties}_${topicsStr}_${dateStr}_${timeStr}.json`;
     let exportSuccess = false;
 
     try {
@@ -437,7 +457,8 @@ const App: React.FC = () => {
       difficulty: job.difficulty,
       count: job.targetQuantity,
       instructions: job.additionalInstructions,
-      fewShotJson: job.fewShotJson
+      fewShotJson: job.fewShotJson,
+      mainPrompt: job.promptForContentEngine || `Generate ${job.targetQuantity} ${job.section} templates at ${job.difficulty} difficulty focusing on ${job.topic}.`
     }));
     addLog(`Loaded job "${job.topic}" into generation form.`, 'info');
   }, [addLog]);
