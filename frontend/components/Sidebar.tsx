@@ -1,6 +1,23 @@
 import React from 'react';
 import { Settings, Play, Upload, Plus, Loader2, FileText, CheckCircle2, ListTodo, Zap, XCircle } from 'lucide-react';
-import { GenerationParams, Job, BatchProgress } from '../types';
+import { GenerationParams, Job, BatchProgress, TopicSelection } from '../types';
+
+export const ENGLISH_TOPICS: TopicSelection[] = [
+  { id: 'eng_a', label: 'Section A: Spelling, Punctuation & Grammar', section: 'English', topic: 'English SPaG' },
+  { id: 'eng_b', label: 'Section B: Text 1 Comprehension', section: 'English', topic: 'English Comprehension' },
+  { id: 'eng_c', label: 'Section C: Text 2 Comprehension', section: 'English', topic: 'English Comprehension' },
+  { id: 'eng_d', label: 'Section D: Critical Comparison', section: 'English', topic: 'English Comparison' },
+];
+
+export const MATHS_TOPICS: TopicSelection[] = [
+  { id: 'math_arith', label: 'Arithmetic', section: 'Maths', topic: 'Arithmetic' },
+  { id: 'math_geom', label: 'Geometry', section: 'Maths', topic: 'Geometry' },
+  { id: 'math_alg', label: 'Algebra', section: 'Maths', topic: 'Algebra' },
+  { id: 'math_data', label: 'Data Handling', section: 'Maths', topic: 'Data Handling' },
+  { id: 'math_frac', label: 'Fractions, Decimals & Percentages', section: 'Maths', topic: 'Fractions, Decimals & Percentages' },
+  { id: 'math_meas', label: 'Measure', section: 'Maths', topic: 'Measure' },
+  { id: 'math_ratio', label: 'Ratio & Proportion', section: 'Maths', topic: 'Ratio & Proportion' },
+];
 
 interface SidebarProps {
   params: GenerationParams;
@@ -36,6 +53,12 @@ const Sidebar: React.FC<SidebarProps> = ({
   onStopGeneration
 }) => {
 
+  const updateMainPrompt = (topics: TopicSelection[], count: number, difficulty: string) => {
+    if (topics.length === 0) return '';
+    const topicNames = Array.from(new Set(topics.map(t => t.topic))).join(', ');
+    return `Generate ${count} questions at ${difficulty} difficulty. Focus strictly on the following topics: ${topicNames}`;
+  };
+
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
     
@@ -45,11 +68,27 @@ const Sidebar: React.FC<SidebarProps> = ({
     };
 
     // Auto-compile the main prompt if core fields change
-    if (['section', 'topic', 'difficulty', 'count'].includes(name)) {
-      newParams.mainPrompt = `Generate ${newParams.count} ${newParams.section} templates at ${newParams.difficulty} difficulty focusing on ${newParams.topic}.`;
+    if (['difficulty', 'count'].includes(name)) {
+      newParams.mainPrompt = updateMainPrompt(newParams.selectedTopics, newParams.count, newParams.difficulty);
     }
 
     onParamsChange(newParams);
+  };
+
+  const handleTopicToggle = (topicObj: TopicSelection) => {
+    const isSelected = params.selectedTopics.some(t => t.id === topicObj.id);
+    let newTopics;
+    if (isSelected) {
+      newTopics = params.selectedTopics.filter(t => t.id !== topicObj.id);
+    } else {
+      newTopics = [...params.selectedTopics, topicObj];
+    }
+    
+    onParamsChange({
+      ...params,
+      selectedTopics: newTopics,
+      mainPrompt: updateMainPrompt(newTopics, params.count, params.difficulty)
+    });
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -77,31 +116,39 @@ const Sidebar: React.FC<SidebarProps> = ({
             <Plus className="w-4 h-4" /> Generate Archetypes
           </h3>
           <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-1">
-              <label className="text-sm font-medium">Section</label>
-              <select
-                name="section"
-                value={params.section}
-                onChange={handleChange}
-                className="w-full p-2 rounded-md border border-input bg-background text-sm focus:ring-2 focus:ring-ring outline-none"
-              >
-                <option value="Maths">Maths</option>
-                <option value="English SPaG">English SPaG</option>
-                <option value="English Comp">English Comp</option>
-              </select>
-            </div>
+            
+            <div className="space-y-3">
+              <label className="text-sm font-medium">Topics</label>
+              
+              <div className="space-y-2 bg-muted/30 p-3 rounded-md border border-border">
+                <div className="text-xs font-bold text-muted-foreground mb-2 uppercase tracking-wider">English</div>
+                {ENGLISH_TOPICS.map(t => (
+                  <label key={t.id} className="flex items-start gap-2 text-sm cursor-pointer hover:bg-muted/50 p-1 rounded">
+                    <input 
+                      type="checkbox" 
+                      checked={params.selectedTopics.some(st => st.id === t.id)} 
+                      onChange={() => handleTopicToggle(t)} 
+                      className="mt-1 rounded border-input text-primary focus:ring-primary" 
+                    />
+                    <span className="leading-tight">{t.label}</span>
+                  </label>
+                ))}
+              </div>
 
-            <div className="space-y-1">
-              <label className="text-sm font-medium">Topic</label>
-              <input
-                type="text"
-                name="topic"
-                value={params.topic}
-                onChange={handleChange}
-                placeholder="e.g., Ratio & Proportion"
-                className="w-full p-2 rounded-md border border-input bg-background text-sm focus:ring-2 focus:ring-ring outline-none"
-                required
-              />
+              <div className="space-y-2 bg-muted/30 p-3 rounded-md border border-border">
+                <div className="text-xs font-bold text-muted-foreground mb-2 uppercase tracking-wider">Mathematics</div>
+                {MATHS_TOPICS.map(t => (
+                  <label key={t.id} className="flex items-start gap-2 text-sm cursor-pointer hover:bg-muted/50 p-1 rounded">
+                    <input 
+                      type="checkbox" 
+                      checked={params.selectedTopics.some(st => st.id === t.id)} 
+                      onChange={() => handleTopicToggle(t)} 
+                      className="mt-1 rounded border-input text-primary focus:ring-primary" 
+                    />
+                    <span className="leading-tight">{t.label}</span>
+                  </label>
+                ))}
+              </div>
             </div>
 
             <div className="flex gap-4">
@@ -178,7 +225,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             ) : (
               <button
                 type="submit"
-                disabled={isGeneratingBatch}
+                disabled={isGeneratingBatch || params.selectedTopics.length === 0}
                 className="w-full bg-primary text-primary-foreground p-2 rounded-md font-medium flex items-center justify-center gap-2 hover:bg-primary/90 transition-colors disabled:opacity-50"
               >
                 <Settings className="w-4 h-4" />
@@ -278,40 +325,6 @@ const Sidebar: React.FC<SidebarProps> = ({
               No pending jobs. Upload a CSV to queue batch generations.
             </div>
           )}
-        </section>
-
-        {/* Verification & Data Management */}
-        <section className="pt-6 border-t border-border space-y-6">
-          <div>
-            <h3 className="font-semibold flex items-center gap-2 mb-3">
-              <Play className="w-4 h-4" /> Verification Engine
-            </h3>
-            <button
-              onClick={onRunBatchSimulation}
-              disabled={isGeneratingBatch}
-              className="w-full bg-secondary text-secondary-foreground p-2 rounded-md font-medium flex items-center justify-center gap-2 hover:bg-secondary/80 transition-colors disabled:opacity-50"
-            >
-              Run Batch Simulation
-            </button>
-          </div>
-
-          <div>
-            <h3 className="font-semibold flex items-center gap-2 mb-3">
-              <Upload className="w-4 h-4" /> Data Management
-            </h3>
-            <div className="space-y-2">
-              <label className="w-full bg-background border border-input text-foreground p-2 rounded-md font-medium flex items-center justify-center gap-2 hover:bg-accent transition-colors cursor-pointer">
-                <Upload className="w-4 h-4" />
-                Import JSON Manifest
-                <input
-                  type="file"
-                  accept=".json"
-                  className="hidden"
-                  onChange={onImportManifest}
-                />
-              </label>
-            </div>
-          </div>
         </section>
 
       </div>
