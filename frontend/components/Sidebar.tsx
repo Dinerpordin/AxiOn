@@ -38,10 +38,18 @@ const Sidebar: React.FC<SidebarProps> = ({
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
-    onParamsChange({
+    
+    const newParams = {
       ...params,
       [name]: name === 'count' ? parseInt(value, 10) || 1 : value
-    });
+    };
+
+    // Auto-compile the main prompt if core fields change
+    if (['section', 'topic', 'difficulty', 'count'].includes(name)) {
+      newParams.mainPrompt = `Generate ${newParams.count} ${newParams.section} templates at ${newParams.difficulty} difficulty focusing on ${newParams.topic}.`;
+    }
+
+    onParamsChange(newParams);
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -122,6 +130,18 @@ const Sidebar: React.FC<SidebarProps> = ({
                   className="w-full p-2 rounded-md border border-input bg-background text-sm focus:ring-2 focus:ring-ring outline-none"
                 />
               </div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-sm font-medium">Prompt for Content Engine (Main Prompt)</label>
+              <textarea
+                name="mainPrompt"
+                value={params.mainPrompt}
+                onChange={handleChange}
+                placeholder="Auto-compiles based on selections..."
+                className="w-full p-2 rounded-md border border-input bg-background text-sm h-20 resize-none focus:ring-2 focus:ring-ring outline-none"
+                required
+              />
             </div>
 
             <div className="space-y-1">
