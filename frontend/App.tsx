@@ -70,6 +70,7 @@ const App: React.FC = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isLogsOpen, setIsLogsOpen] = useState(false);
   
+  // Custom modal states to bypass sandbox window.confirm restrictions
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [showExportSuccess, setShowExportSuccess] = useState(false);
   
@@ -336,6 +337,36 @@ Distractors: ${JSON.stringify(template.distractor_logic)}`;
     });
   }, [logRejection]);
 
+  const handleBatchApprove = useCallback(() => {
+    setTemplates(prev => {
+      let count = 0;
+      const next = prev.map(t => {
+        if (t.status === 'pending' && t.testResult?.passed) {
+          count++;
+          return { ...t, status: 'approved' };
+        }
+        return t;
+      });
+      if (count > 0) addLog(`Batch approved ${count} passed templates.`, 'success');
+      return next;
+    });
+  }, [addLog]);
+
+  const handleBatchReject = useCallback(() => {
+    setTemplates(prev => {
+      let count = 0;
+      const next = prev.map(t => {
+        if (t.status === 'pending' && t.testResult && !t.testResult.passed) {
+          count++;
+          return { ...t, status: 'rejected' };
+        }
+        return t;
+      });
+      if (count > 0) addLog(`Batch rejected ${count} failed templates.`, 'info');
+      return next;
+    });
+  }, [addLog]);
+
   const handleUpdateTemplate = useCallback((updatedTemplate: QuestionTemplate) => {
     setTemplates(prev => prev.map(t => t.id === updatedTemplate.id ? updatedTemplate : t));
   }, []);
@@ -559,6 +590,8 @@ Distractors: ${JSON.stringify(template.distractor_logic)}`;
           onOpenSettings={() => setIsSettingsOpen(true)} 
           onOpenLogs={() => setIsLogsOpen(true)}
           onClearAll={handleClearAll}
+          onBatchApprove={handleBatchApprove}
+          onBatchReject={handleBatchReject}
         />
         
         <div className="p-6 flex-1 overflow-y-auto">
