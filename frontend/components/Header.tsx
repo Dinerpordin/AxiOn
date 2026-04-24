@@ -1,5 +1,5 @@
 import React from 'react';
-import { Download, CheckCircle2, Clock, AlertCircle, Settings, Terminal } from 'lucide-react';
+import { Download, CheckCircle2, Clock, AlertCircle, Settings, Terminal, Trash2 } from 'lucide-react';
 import { QuestionTemplate } from '../types';
 
 interface HeaderProps {
@@ -7,9 +7,12 @@ interface HeaderProps {
   onExport: () => void;
   onOpenSettings: () => void;
   onOpenLogs: () => void;
+  onClearAll: () => void;
+  onBatchApprove: () => void;
+  onBatchReject: () => void;
 }
 
-const Header: React.FC<HeaderProps> = ({ templates, onExport, onOpenSettings, onOpenLogs }) => {
+const Header: React.FC<HeaderProps> = ({ templates, onExport, onOpenSettings, onOpenLogs, onClearAll, onBatchApprove, onBatchReject }) => {
   const total = templates.length;
   const approved = templates.filter(t => (t.status || 'pending') === 'approved').length;
   const pending = templates.filter(t => (t.status || 'pending') === 'pending').length;
@@ -54,6 +57,21 @@ const Header: React.FC<HeaderProps> = ({ templates, onExport, onOpenSettings, on
 
       <div className="flex items-center gap-3">
         <button
+          onClick={onBatchApprove}
+          className="bg-green-100 text-green-700 px-3 py-1.5 rounded-md text-sm font-medium hover:bg-green-200 transition-colors"
+          title="Approve all passed templates"
+        >
+          Approve Passed
+        </button>
+        <button
+          onClick={onBatchReject}
+          className="bg-red-100 text-red-700 px-3 py-1.5 rounded-md text-sm font-medium hover:bg-red-200 transition-colors"
+          title="Reject all failed templates"
+        >
+          Reject Failed
+        </button>
+        <div className="w-px h-6 bg-border mx-1"></div>
+        <button
           onClick={onOpenLogs}
           className="p-2 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors"
           title="View Audit Logs"
@@ -68,6 +86,13 @@ const Header: React.FC<HeaderProps> = ({ templates, onExport, onOpenSettings, on
           <Settings className="w-5 h-5" />
         </button>
         <div className="w-px h-6 bg-border mx-1"></div>
+        <button
+          onClick={onClearAll}
+          className="p-2 text-destructive hover:text-destructive-foreground hover:bg-destructive rounded-md transition-colors"
+          title="Clear All Data"
+        >
+          <Trash2 className="w-5 h-5" />
+        </button>
         <button
           onClick={onExport}
           disabled={approved === 0}
