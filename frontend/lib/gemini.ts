@@ -11,7 +11,7 @@ const getQuestionTemplateSchema = (count: number): Schema => ({
     type: Type.OBJECT,
     properties: {
       id: { type: Type.STRING, description: "A unique alphanumeric or semantic string identifier (e.g., 'sset_math_001')." },
-      section: { type: Type.STRING, description: "e.g., 'Maths', 'English Section A'." },
+      section: { type: Type.STRING, description: "e.g., 'Maths', 'English Section A', 'English Section B', 'English Section C'." },
       topic: { type: Type.STRING, description: "Must be an exact enum (e.g., 'Arithmetic', 'Geometry', 'English SPaG', 'English Comprehension', 'English Comparison')." },
       difficulty: { type: Type.STRING, description: "e.g., 'D1', 'D2', 'D3'." },
       template_stem: { type: Type.STRING, description: "The question text with variables wrapped in curly braces (e.g., '{TOTAL_CAKES}')." },
@@ -48,7 +48,22 @@ const getQuestionTemplateSchema = (count: number): Schema => ({
           required: ["expr", "trap_label", "misconception_tag"]
         }
       },
-      svg_template: { type: Type.STRING, description: "Raw, responsive SVG string or null. Must include 'Diagram NOT drawn to scale' if present." },
+      svg_template: { type: Type.STRING, description: "Raw, responsive SVG string or null." },
+      visual_payload: {
+        type: Type.OBJECT,
+        description: "Optional visual payload for geometry/diagrams.",
+        properties: {
+          type: { type: Type.STRING, description: "'rectangle', 'l_shape', 'triangle', 'circle', 'compound'" },
+          labels: { type: Type.OBJECT, description: "Key-value pairs of labels" },
+          options: {
+            type: Type.OBJECT,
+            properties: {
+              notToScale: { type: Type.BOOLEAN }
+            }
+          }
+        },
+        required: ["type", "labels"]
+      },
       skill_tags: {
         type: Type.ARRAY,
         items: { type: Type.STRING },
@@ -119,11 +134,15 @@ Every question object MUST contain exactly these keys:
   const MAX_RETRIES = 3;
   let attempt = 0;
 
+  const topicNames = params.selectedTopics.map(t => t.topic).join(', ');
+  if (onLog) onLog(`Initiating generation for topics: "${topicNames}" (Count: ${params.count}, Difficulty: ${params.difficulty})`, 'info');
+
   while (attempt < MAX_RETRIES) {
     if (abortSignal?.aborted) throw new Error("Aborted by user");
     
     try {
       const modelName = settings.model || 'gemini-2.5-flash';
+      if (onLog) onLog(`Calling API using model: ${modelName} (Attempt ${attempt + 1}/${MAX_RETRIES})`, 'info');
       
       const generatePromise = ai.models.generateContent({
         model: modelName,
@@ -159,6 +178,12 @@ Every question object MUST contain exactly these keys:
 
       const templates: QuestionTemplate[] = JSON.parse(response.text);
       
+      if (templates.length < params.count) {
+        if (onLog) onLog(`Warning: Requested ${params.count} templates, but AI only generated ${templates.length}.`, 'warning');
+      } else {
+        if (onLog) onLog(`Successfully generated ${templates.length} templates.`, 'success');
+      }
+
       // Ensure exactly 4 distractors, pending status, and UNIQUE IDs to prevent React key collisions
       return templates.map((t, index) => ({
         ...t,
@@ -177,9 +202,11 @@ Every question object MUST contain exactly these keys:
       console.error(`Error generating templates (attempt ${attempt}):`, error);
       
       if (attempt >= MAX_RETRIES) {
-        if (onLog) onLog(`System Error: API Generation failed after ${MAX_RETRIES} attempts: ${error.message}`, 'error');
+        if (onLog) onLog(`Generation failed after ${MAX_RETRIES} attempts: ${error.message}`, 'error');
         throw new Error(`Failed to generate templates after ${MAX_RETRIES} attempts: ${error.message}`);
       }
+      
+      if (onLog) onLog(`Attempt ${attempt} failed: ${error.message}. Waiting 10 seconds before retrying to prevent rate limits...`, 'warning');
       
       // Interruptible 10-second wait
       for (let w = 0; w < 100; w++) {
