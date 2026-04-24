@@ -19,7 +19,7 @@ export interface TestResult {
 
 export interface QuestionTemplate {
   id: string;
-  section: string;
+  section: 'Maths' | 'English Section A' | 'English Section B' | 'English Section C';
   topic: string;
   difficulty: string;
   template_stem: string;
@@ -28,6 +28,11 @@ export interface QuestionTemplate {
   correct_answer_logic: string;
   distractor_logic: DistractorLogic[];
   svg_template?: string | null;
+  visual_payload?: {
+    type: 'rectangle' | 'l_shape' | 'triangle' | 'circle' | 'compound';
+    labels: Record<string, string>;
+    options?: { notToScale?: boolean };
+  } | null;
   skill_tags: string[];
   status: 'pending' | 'approved' | 'rejected' | 'published';
   multiSelect: boolean;
