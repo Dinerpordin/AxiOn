@@ -80,17 +80,14 @@ export const runMonteCarloTest = (template: QuestionTemplate): TestResult => {
     return { passed: false, errors: ["Correct answer logic is empty."], lastRunTimestamp: Date.now() };
   }
 
-  // 1. Check SVG requirements
-  // Only check if svg_template is a valid string and NOT the string "null"
-  if (
-    template.svg_template && 
-    typeof template.svg_template === 'string' && 
-    template.svg_template.trim() !== '' && 
-    template.svg_template.trim().toLowerCase() !== 'null'
-  ) {
-    if (!template.svg_template.includes('Diagram NOT drawn to scale')) {
-      errors.push('SVG Error: Missing "Diagram NOT drawn to scale" disclaimer.');
-    }
+  const MAX_CONSTRAINTS_PER_VARIABLE = 5;
+  const variableCount = variableBounds.length;
+  const constraintCount = (template.constraints || []).length;
+
+  if (constraintCount > variableCount * MAX_CONSTRAINTS_PER_VARIABLE) {
+    errors.push(
+      `Over-constrained: ${constraintCount} constraints for ${variableCount} variables. Maximum allowed is ${variableCount * MAX_CONSTRAINTS_PER_VARIABLE}. Simplify the constraint chain.`
+    );
   }
 
   // 2. Pre-compile expressions for massive performance boost
