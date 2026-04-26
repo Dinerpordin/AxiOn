@@ -14,7 +14,10 @@ const SETTINGS_KEY = 'sset_settings';
 const JOBS_KEY = 'sset_jobs';
 
 const DEFAULT_SETTINGS: AppSettings = {
-  model: 'gemini-2.5-flash',
+  provider: 'openrouter',
+  apiKey: '',
+  model: 'google/gemini-2.5-flash',
+  baseUrl: 'https://openrouter.ai/api/v1/chat/completions',
   systemInstructions: `Role & Persona:
 You are an elite Curriculum Engineer designing Stage 1 Maths and English assessments (SSET format) for top-tier UK independent schools (11+ level). Your primary function is to generate rigorous, multi-step "Triple-Jump" questions and output them strictly in a highly structured JSON array format.
 
@@ -45,7 +48,11 @@ skill_tags (array of strings)
 CRITICAL RULE 4: Batch Variance
 When asked to generate multiple questions, force distinct contextual scenarios (e.g., cars, boats, runners, trains) and vary the trap formulas. Do not repeat the same question structure with just different variable names.
 
-Constraint Syntax: When using built-in math functions in the logic or constraints, use the raw function names natively (e.g., lcm(A,B), gcd(A,B)). DO NOT prefix them with "math." as it will cause a syntax error in the evaluator.`
+Why this will fix your validation failures:
+- It forces the Modulo (%): The biggest reason batch math questions fail is division resulting in infinite decimals (like $10/3 = 3.333...). This instruction explicitly threatens the AI to use the % == 0 constraint.
+- It locks the JSON Keys: Your last JSON export used variable_bounds, but earlier ones used variable_constraints or variables. This instruction forces the AI to stick to the exact keys your app expects, preventing "null value" database crashes.
+- It bans Red Herrings: It explicitly forbids the "assuming the price is the same" trap that ruined the Percentages batch earlier. 
+- Constraint Syntax: When using built-in math functions in the logic or constraints, use the raw function names natively (e.g., lcm(A,B), gcd(A,B)). DO NOT prefix them with "math." as it will cause a syntax error in the evaluator.`
 };
 
 const App: React.FC = () => {
@@ -181,23 +188,17 @@ Distractors: ${JSON.stringify(template.distractor_logic)}`;
     addLog(`Manual generation started for topics: ${topicNames}`, 'info');
     
     try {
-      const result = await generateTemplates(generationParams, settings, addLog, abortControllerRef.current.signal);
+      const newTemplates = await generateTemplates(generationParams, settings, addLog, abortControllerRef.current.signal);
       
-      if (result.warnings.length > 0) {
-        result.warnings.forEach(w => {
-          addLog(`Template ${w.templateIndex} failed validation: ${w.errors.join(' | ')}`, 'warning');
-        });
-      }
-
       // Yielding Monte Carlo tests to prevent UI freeze
       const tested = [];
-      for (const t of result.templates) {
+      for (const t of newTemplates) {
         if (abortControllerRef.current?.signal.aborted) break;
-        const mcResult = runMonteCarloTest(t);
-        if (!mcResult.passed) {
-          logRejection(t, mcResult.errors.join(' | '), generationParams);
+        const result = runMonteCarloTest(t);
+        if (!result.passed) {
+          logRejection(t, result.errors.join(' | '), generationParams);
         }
-        tested.push({ ...t, testResult: mcResult });
+        tested.push({ ...t, testResult: result });
         await new Promise(r => setTimeout(r, 10)); // Yield to main thread
       }
 
