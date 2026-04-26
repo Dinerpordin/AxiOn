@@ -60,7 +60,10 @@ export interface GenerationParams {
 }
 
 export interface AppSettings {
+  provider: 'gemini' | 'openai' | 'openrouter';
+  apiKey: string;
   model: string;
+  baseUrl: string;
   systemInstructions: string;
 }
 
