@@ -99,7 +99,7 @@ ${inputStr}
 Stem: ${template.template_stem}
 
 [LOGIC]
-Variables: ${JSON.stringify(template.variable_bounds || (template as any).variables)}
+Variables: ${JSON.stringify(template.variables || (template as any).variable_bounds)}
 Constraints: ${JSON.stringify(template.constraints || [])}
 Correct Logic: ${template.correct_answer_logic}
 Distractors: ${JSON.stringify(template.distractor_logic)}`;
@@ -117,7 +117,7 @@ Distractors: ${JSON.stringify(template.distractor_logic)}`;
           setTemplates(parsed.map(t => ({ 
             ...t, 
             status: t.status || 'pending',
-            variable_bounds: t.variable_bounds || t.variables || [] 
+            variables: t.variables || t.variable_bounds || [] 
           })));
         }
       } catch (e) {
@@ -177,28 +177,40 @@ Distractors: ${JSON.stringify(template.distractor_logic)}`;
     setIsGenerating(true);
     setError(null);
     abortControllerRef.current = new AbortController();
+    const topicNames = generationParams.selectedTopics.map(t => t.topic).join(', ');
+    addLog(`Manual generation started for topics: ${topicNames}`, 'info');
     
     try {
-      const newTemplates = await generateTemplates(generationParams, settings, addLog, abortControllerRef.current.signal);
+      const result = await generateTemplates(generationParams, settings, addLog, abortControllerRef.current.signal);
       
+      if (result.warnings.length > 0) {
+        result.warnings.forEach(w => {
+          addLog(`Template ${w.templateIndex} failed validation: ${w.errors.join(' | ')}`, 'warning');
+        });
+      }
+
+      // Yielding Monte Carlo tests to prevent UI freeze
       const tested = [];
-      for (const t of newTemplates) {
+      for (const t of result.templates) {
         if (abortControllerRef.current?.signal.aborted) break;
-        const result = runMonteCarloTest(t);
-        if (!result.passed) {
-          logRejection(t, result.errors.join(' | '), generationParams);
+        const mcResult = runMonteCarloTest(t);
+        if (!mcResult.passed) {
+          logRejection(t, mcResult.errors.join(' | '), generationParams);
         }
-        tested.push({ ...t, testResult: result });
+        tested.push({ ...t, testResult: mcResult });
         await new Promise(r => setTimeout(r, 10)); // Yield to main thread
       }
 
       if (!abortControllerRef.current?.signal.aborted) {
         setTemplates(prev => [...tested, ...prev]);
+        addLog(`Manual generation completed. Added ${tested.length} templates.`, 'success');
       }
     } catch (err: any) {
-      if (err.message !== 'Aborted by user') {
+      if (err.message === 'Aborted by user') {
+        addLog('Manual generation stopped by user.', 'warning');
+      } else {
         setError(err.message || "Failed to generate templates.");
-        addLog(`System Error: ${err.message}`, 'error');
+        addLog(`Manual generation failed: ${err.message}`, 'error');
       }
     } finally {
       setIsGenerating(false);
@@ -213,15 +225,21 @@ Distractors: ${JSON.stringify(template.distractor_logic)}`;
     const signal = abortControllerRef.current.signal;
     
     const pendingJobs = jobQueue.filter(j => j.status === 'pending');
+    addLog(`Starting batch generation for ${pendingJobs.length} jobs.`, 'info');
     setBatchProgress({ current: 0, total: pendingJobs.length, label: 'Initializing...' });
     
     for (let i = 0; i < pendingJobs.length; i++) {
-      if (signal.aborted) break;
+      if (signal.aborted) {
+        addLog('Batch generation stopped by user.', 'warning');
+        break;
+      }
 
       const job = pendingJobs[i];
       setBatchProgress({ current: i, total: pendingJobs.length, label: job.topic });
+      addLog(`Processing Job: ${job.topic} (${job.targetQuantity} items)`, 'info');
       
       try {
+        // Create a temporary TopicSelection for the job
         const jobTopicSelection: TopicSelection = {
           id: `job-topic-${Date.now()}`,
           label: `${job.section}: ${job.topic}`,
@@ -238,27 +256,44 @@ Distractors: ${JSON.stringify(template.distractor_logic)}`;
           mainPrompt: job.promptForContentEngine || `Generate ${job.targetQuantity} questions at ${job.difficulty} difficulty. Focus strictly on the following topics: ${job.topic}.`
         };
 
-        const generated = await generateTemplates(params, settings, addLog, signal);
+        // 1. Generate templates for this job
+        const result = await generateTemplates(params, settings, addLog, signal);
         if (signal.aborted) break;
 
+        if (result.warnings.length > 0) {
+          result.warnings.forEach(w => {
+            addLog(`[Job: ${job.topic}] Template ${w.templateIndex} failed validation: ${w.errors.join(' | ')}`, 'warning');
+          });
+        }
+
+        // 2. Auto-validate (Monte Carlo test) with yielding
         const tested = [];
-        for (const t of generated) {
+        for (const t of result.templates) {
           if (signal.aborted) break;
-          const result = runMonteCarloTest(t);
-          if (!result.passed) {
-            logRejection(t, result.errors.join(' | '), params);
+          const mcResult = runMonteCarloTest(t);
+          if (mcResult.passed) {
+            addLog(`[Job: ${job.topic}] Template ${t.id} passed simulation.`, 'success');
+          } else {
+            addLog(`[Job: ${job.topic}] Template ${t.id} failed simulation: ${mcResult.errors.join(' | ')}`, 'error');
+            logRejection(t, mcResult.errors.join(' | '), params);
           }
-          tested.push({ ...t, testResult: result });
-          await new Promise(r => setTimeout(r, 10));
+          tested.push({ ...t, testResult: mcResult });
+          await new Promise(r => setTimeout(r, 10)); // Yield to main thread
         }
 
         if (signal.aborted) break;
 
+        // 3. Add to state progressively
         setTemplates(prev => [...tested, ...prev]);
+
+        // 4. Mark job as complete
         setJobQueue(prev => prev.map(j => j.id === job.id ? { ...j, status: 'completed' } : j));
+        addLog(`Job completed: ${job.topic}`, 'success');
         setBatchProgress({ current: i + 1, total: pendingJobs.length, label: job.topic });
 
+        // 5. Cooldown between jobs to prevent rate limits (HTTP 429)
         if (i < pendingJobs.length - 1) {
+          addLog(`Cooling down for 4 seconds to prevent API rate limits...`, 'info');
           for (let w = 0; w < 40; w++) {
             if (signal.aborted) throw new Error("Aborted by user");
             await new Promise(r => setTimeout(r, 100));
@@ -266,15 +301,18 @@ Distractors: ${JSON.stringify(template.distractor_logic)}`;
         }
 
       } catch (err: any) {
-        if (err.message !== 'Aborted by user') {
-          const errMsg = `Batch generation stopped. Failed on job "${job.topic}": ${err.message}`;
-          setError(errMsg);
-          addLog(errMsg, 'error');
+        if (err.message === 'Aborted by user') {
+          addLog(`Batch generation stopped by user during job "${job.topic}".`, 'warning');
+          break;
         }
-        break;
+        const errMsg = `Batch generation stopped. Failed on job "${job.topic}": ${err.message}`;
+        setError(errMsg);
+        addLog(errMsg, 'error');
+        break; // Stop processing further jobs on error
       }
     }
     
+    addLog(`Batch generation process finished.`, 'info');
     setIsGeneratingBatch(false);
     setBatchProgress({ current: 0, total: 0, label: '' });
     abortControllerRef.current = null;
@@ -284,6 +322,7 @@ Distractors: ${JSON.stringify(template.distractor_logic)}`;
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
+    // Instantly update UI state to feel responsive
     setIsGenerating(false);
     setIsGeneratingBatch(false);
     setBatchProgress({ current: 0, total: 0, label: '' });
@@ -305,23 +344,30 @@ Distractors: ${JSON.stringify(template.distractor_logic)}`;
   }, [logRejection]);
 
   const handleRunBatchSimulation = useCallback(async () => {
-    setIsGeneratingBatch(true);
+    setIsGeneratingBatch(true); // Reuse this state to show loading spinner
+    addLog(`Running batch simulation for all pending templates...`, 'info');
+    let passCount = 0;
+    let failCount = 0;
+
     const updatedTemplates = [];
     for (const t of templates) {
       if ((t.status || 'pending') === 'pending') {
         const result = runMonteCarloTest(t);
+        if (result.passed) passCount++; else failCount++;
         if (!result.passed) {
           logRejection(t, result.errors.join(' | '));
         }
         updatedTemplates.push({ ...t, testResult: result });
-        await new Promise(r => setTimeout(r, 10));
+        await new Promise(r => setTimeout(r, 10)); // Yield to main thread
       } else {
         updatedTemplates.push(t);
       }
     }
+
     setTemplates(updatedTemplates);
+    addLog(`Batch simulation complete. Passed: ${passCount}, Failed: ${failCount}`, failCount > 0 ? 'warning' : 'success');
     setIsGeneratingBatch(false);
-  }, [templates, logRejection]);
+  }, [templates, addLog, logRejection]);
 
   const handleUpdateStatus = useCallback((id: string, status: 'approved' | 'rejected' | 'pending') => {
     setTemplates(prev => {
@@ -369,11 +415,13 @@ Distractors: ${JSON.stringify(template.distractor_logic)}`;
 
   const handleUpdateTemplate = useCallback((updatedTemplate: QuestionTemplate) => {
     setTemplates(prev => prev.map(t => t.id === updatedTemplate.id ? updatedTemplate : t));
-  }, []);
+    addLog(`Template ${updatedTemplate.id} logic manually updated.`, 'info');
+  }, [addLog]);
 
   const handleDeleteTemplate = useCallback((id: string) => {
     setTemplates(prev => prev.filter(t => t.id !== id));
-  }, []);
+    addLog(`Template ${id} deleted.`, 'info');
+  }, [addLog]);
 
   const handleClearAll = useCallback(() => {
     setShowClearConfirm(true);
@@ -385,9 +433,10 @@ Distractors: ${JSON.stringify(template.distractor_logic)}`;
     setLogs([]);
     localStorage.removeItem(STORAGE_KEY);
     localStorage.removeItem(JOBS_KEY);
+    addLog("All data and caches cleared by user.", "warning");
     setShowClearConfirm(false);
     setShowExportSuccess(false);
-  }, []);
+  }, [addLog]);
 
   const handleExport = useCallback(async () => {
     const approved = templates.filter(t => (t.status || 'pending') === 'approved');
@@ -395,6 +444,7 @@ Distractors: ${JSON.stringify(template.distractor_logic)}`;
 
     const jsonString = JSON.stringify(approved, null, 2);
     
+    // Extract unique parameters for filename
     const sections = Array.from(new Set(approved.map(t => t.section))).map(s => s.replace(/[^a-zA-Z0-9]/g, '')).join('-');
     const difficulties = Array.from(new Set(approved.map(t => t.difficulty))).join('-');
     const uniqueTopics = Array.from(new Set(approved.map(t => t.topic)));
@@ -403,13 +453,14 @@ Distractors: ${JSON.stringify(template.distractor_logic)}`;
       : uniqueTopics.map(t => t.replace(/[^a-zA-Z0-9]/g, '')).join('-');
     
     const now = new Date();
-    const dateStr = now.toISOString().split('T')[0];
-    const timeStr = now.toTimeString().split(' ')[0].replace(/:/g, '');
+    const dateStr = now.toISOString().split('T')[0]; // YYYY-MM-DD
+    const timeStr = now.toTimeString().split(' ')[0].replace(/:/g, ''); // HHMMSS
     
     const defaultFileName = `${sections}_${difficulties}_${topicsStr}_${dateStr}_${timeStr}.json`;
     let exportSuccess = false;
 
     try {
+      // Use File System Access API if available (allows folder selection)
       if ('showSaveFilePicker' in window) {
         try {
           const handle = await (window as any).showSaveFilePicker({
@@ -422,13 +473,17 @@ Distractors: ${JSON.stringify(template.distractor_logic)}`;
           const writable = await handle.createWritable();
           await writable.write(jsonString);
           await writable.close();
+          addLog(`Exported ${approved.length} approved templates to JSON via File Picker.`, 'success');
           exportSuccess = true;
         } catch (pickerErr: any) {
-          if (pickerErr.name === 'AbortError') return;
+          if (pickerErr.name === 'AbortError') {
+            return; // User cancelled the picker, do nothing
+          }
           console.warn('showSaveFilePicker failed, falling back to Blob download:', pickerErr);
         }
       }
 
+      // Fallback for browsers/sandboxes that don't support showSaveFilePicker
       if (!exportSuccess) {
         const blob = new Blob([jsonString], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
@@ -439,9 +494,11 @@ Distractors: ${JSON.stringify(template.distractor_logic)}`;
         downloadAnchorNode.click();
         downloadAnchorNode.remove();
         URL.revokeObjectURL(url);
+        addLog(`Exported ${approved.length} approved templates to JSON (Fallback).`, 'success');
         exportSuccess = true;
       }
 
+      // Prompt to clear data after successful export using custom modal
       if (exportSuccess) {
         setShowExportSuccess(true);
       }
@@ -469,8 +526,9 @@ Distractors: ${JSON.stringify(template.distractor_logic)}`;
               .map(t => ({ 
                 ...t, 
                 status: t.status || 'pending',
-                variable_bounds: t.variable_bounds || (t as any).variables || []
+                variables: t.variables || (t as any).variable_bounds || []
               }));
+            addLog(`Imported ${newUnique.length} new templates from JSON manifest.`, 'success');
             return [...newUnique, ...prev];
           });
         }
@@ -491,6 +549,7 @@ Distractors: ${JSON.stringify(template.distractor_logic)}`;
       header: true,
       skipEmptyLines: true,
       complete: (results) => {
+        // Helper to robustly find column values regardless of exact casing or trailing spaces
         const getVal = (row: any, possibleKeys: string[]) => {
           const key = Object.keys(row).find(k => 
             possibleKeys.some(pk => k.trim().toLowerCase() === pk.toLowerCase())
@@ -526,6 +585,7 @@ Distractors: ${JSON.stringify(template.distractor_logic)}`;
           };
         });
         setJobQueue(prev => [...prev, ...newJobs]);
+        addLog(`Imported ${newJobs.length} jobs from CSV matrix.`, 'success');
       },
       error: (err) => {
         setError(`Failed to parse CSV: ${err.message}`);
@@ -556,13 +616,15 @@ Distractors: ${JSON.stringify(template.distractor_logic)}`;
       fewShotJson: job.fewShotJson,
       mainPrompt: job.promptForContentEngine || `Generate ${job.targetQuantity} questions at ${job.difficulty} difficulty. Focus strictly on the following topics: ${job.topic}.`
     }));
-  }, []);
+    addLog(`Loaded job "${job.topic}" into generation form.`, 'info');
+  }, [addLog]);
 
   const handleMarkJobComplete = useCallback((jobId: string) => {
     setJobQueue(prev => prev.map(job => 
       job.id === jobId ? { ...job, status: 'completed' } : job
     ));
-  }, []);
+    addLog(`Manually marked job ${jobId} as complete.`, 'info');
+  }, [addLog]);
 
   return (
     <div className="min-h-screen bg-background flex">
@@ -635,6 +697,7 @@ Distractors: ${JSON.stringify(template.distractor_logic)}`;
           onSave={(newSettings) => {
             setSettings(newSettings);
             setIsSettingsOpen(false);
+            addLog(`Application settings updated.`, 'info');
           }}
           onClose={() => setIsSettingsOpen(false)}
         />
