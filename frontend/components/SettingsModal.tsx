@@ -35,23 +35,62 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ settings, onSave, onClose
           <div className="bg-blue-50 text-blue-800 p-3 rounded-md text-sm flex items-start gap-2 border border-blue-200">
             <Info className="w-4 h-4 mt-0.5 shrink-0" />
             <p>
-              <strong>Note:</strong> The API Key is securely managed via environment variables (<code>process.env.API_KEY</code>) and cannot be changed here.
+              <strong>Note:</strong> You can use the default environment API key for Gemini, or provide your own custom API key for Gemini, OpenRouter, or OpenAI-compatible endpoints.
             </p>
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium text-foreground block">AI Model</label>
+            <label className="text-sm font-medium text-foreground block">Provider</label>
             <select
-              name="model"
-              value={localSettings.model}
+              name="provider"
+              value={localSettings.provider}
               onChange={handleChange}
               className="w-full p-2 rounded-md border border-input bg-background text-sm focus:ring-2 focus:ring-ring outline-none"
             >
-              <option value="gemini-2.5-flash">gemini-2.5-flash (Stable & Fast)</option>
-              <option value="gemini-2.5-pro">gemini-2.5-pro (Advanced Reasoning)</option>
+              <option value="gemini">Google Gemini</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="openai">OpenAI / Custom (REST API)</option>
             </select>
-            <p className="text-xs text-muted-foreground">Select the Gemini model to use for generation. Invalid models will cause 'Failed to fetch' errors.</p>
           </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-foreground block">API Key</label>
+            <input
+              type="password"
+              name="apiKey"
+              value={localSettings.apiKey}
+              onChange={handleChange}
+              placeholder="Enter API Key (leave blank for default env key)"
+              className="w-full p-2 rounded-md border border-input bg-background text-sm focus:ring-2 focus:ring-ring outline-none"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-foreground block">Model Name</label>
+            <input
+              type="text"
+              name="model"
+              value={localSettings.model}
+              onChange={handleChange}
+              placeholder={localSettings.provider === 'openrouter' ? 'google/gemini-2.5-flash' : 'e.g., gemini-2.5-flash, gpt-4o'}
+              className="w-full p-2 rounded-md border border-input bg-background text-sm focus:ring-2 focus:ring-ring outline-none"
+            />
+            <p className="text-xs text-muted-foreground">Select the model to use for generation. Invalid models will cause 'Failed to fetch' errors.</p>
+          </div>
+
+          {(localSettings.provider === 'openai' || localSettings.provider === 'openrouter') && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-foreground block">Base URL</label>
+              <input
+                type="text"
+                name="baseUrl"
+                value={localSettings.baseUrl}
+                onChange={handleChange}
+                placeholder={localSettings.provider === 'openrouter' ? 'https://openrouter.ai/api/v1/chat/completions' : 'https://api.openai.com/v1/chat/completions'}
+                className="w-full p-2 rounded-md border border-input bg-background text-sm focus:ring-2 focus:ring-ring outline-none"
+              />
+            </div>
+          )}
 
           <div className="space-y-2">
             <label className="text-sm font-medium text-foreground block">Master System Instructions</label>
