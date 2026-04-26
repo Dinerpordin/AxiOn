@@ -2,9 +2,6 @@ import { GoogleGenAI, Type, Schema } from '@google/genai';
 import { GenerationParams, QuestionTemplate, AppSettings } from '../types';
 import { repairTemplate, validateTemplate } from './template-validator';
 
-// Initialize the SDK. The API key MUST be provided via process.env.API_KEY
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY, vertexai: true });
-
 const getQuestionTemplateSchema = (count: number): Schema => ({
   type: Type.ARRAY,
   description: `An array of EXACTLY ${count} 11+ exam question archetypes. You MUST return exactly ${count} items.`,
@@ -183,46 +180,99 @@ export const generateTemplates = async (
     if (abortSignal?.aborted) throw new Error("Aborted by user");
     
     try {
-      const modelName = settings.model || 'gemini-2.5-flash';
-      if (onLog) onLog(`Calling API using model: ${modelName} (Attempt ${attempts + 1}/${MAX_ATTEMPTS})`, 'info');
-      
       const prompt = attempts === 0
         ? buildBasePrompt(params)
         : buildRetryPrompt(params, lastErrors, attempts);
 
-      const generatePromise = ai.models.generateContent({
-        model: modelName,
-        contents: prompt,
-        config: {
-          systemInstruction: settings.systemInstructions || undefined,
-          responseMimeType: 'application/json',
-          responseSchema: getQuestionTemplateSchema(params.count),
-          temperature: 0.2, // Lowered temperature for logic/math consistency
+      let responseText = "";
+
+      if (settings.provider === 'openai' || settings.provider === 'openrouter') {
+        const modelName = settings.model || (settings.provider === 'openrouter' ? 'google/gemini-2.5-flash' : 'gpt-4o');
+        const baseUrl = settings.baseUrl || (settings.provider === 'openrouter' ? 'https://openrouter.ai/api/v1/chat/completions' : 'https://api.openai.com/v1/chat/completions');
+        
+        if (onLog) onLog(`Calling ${settings.provider === 'openrouter' ? 'OpenRouter' : 'OpenAI'} API using model: ${modelName} (Attempt ${attempts + 1}/${MAX_ATTEMPTS})`, 'info');
+
+        const openAiPrompt = prompt + `\n\nIMPORTANT: You must output a JSON object containing a single key "templates" which holds the array of question objects.`;
+
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${settings.apiKey}`
+        };
+
+        if (settings.provider === 'openrouter') {
+          headers['HTTP-Referer'] = window.location.origin;
+          headers['X-Title'] = 'SSET Factory';
         }
-      });
 
-      let response: any;
-
-      // Use Promise.race to instantly reject if the user clicks Stop
-      if (abortSignal) {
-        const abortPromise = new Promise<never>((_, reject) => {
-          if (abortSignal.aborted) reject(new Error("Aborted by user"));
-          abortSignal.addEventListener('abort', () => reject(new Error("Aborted by user")));
+        const response = await fetch(baseUrl, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            model: modelName,
+            messages: [
+              { role: 'system', content: settings.systemInstructions || '' },
+              { role: 'user', content: openAiPrompt }
+            ],
+            response_format: { type: 'json_object' },
+            temperature: 0.2
+          }),
+          signal: abortSignal
         });
-        
-        // Catch the background promise to prevent unhandled rejections if it fails after abort
-        generatePromise.catch(() => {});
-        
-        response = await Promise.race([generatePromise, abortPromise]);
+
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          throw new Error(`${settings.provider === 'openrouter' ? 'OpenRouter' : 'OpenAI'} API Error: ${response.status} ${response.statusText} - ${JSON.stringify(errData)}`);
+        }
+
+        const data = await response.json();
+        responseText = data.choices[0].message.content;
+
       } else {
-        response = await generatePromise;
+        const modelName = settings.model || 'gemini-2.5-flash';
+        if (onLog) onLog(`Calling Gemini API using model: ${modelName} (Attempt ${attempts + 1}/${MAX_ATTEMPTS})`, 'info');
+        
+        // Use custom API key if provided, otherwise fallback to env.
+        // If custom key is used, vertexai should be false (AI Studio). If env key, vertexai is true.
+        const ai = new GoogleGenAI({ 
+          apiKey: settings.apiKey || process.env.API_KEY, 
+          vertexai: !settings.apiKey 
+        });
+
+        const generatePromise = ai.models.generateContent({
+          model: modelName,
+          contents: prompt,
+          config: {
+            systemInstruction: settings.systemInstructions || undefined,
+            responseMimeType: 'application/json',
+            responseSchema: getQuestionTemplateSchema(params.count),
+            temperature: 0.2, // Lowered temperature for logic/math consistency
+          }
+        });
+
+        let response: any;
+
+        // Use Promise.race to instantly reject if the user clicks Stop
+        if (abortSignal) {
+          const abortPromise = new Promise<never>((_, reject) => {
+            if (abortSignal.aborted) reject(new Error("Aborted by user"));
+            abortSignal.addEventListener('abort', () => reject(new Error("Aborted by user")));
+          });
+          
+          // Catch the background promise to prevent unhandled rejections if it fails after abort
+          generatePromise.catch(() => {});
+          
+          response = await Promise.race([generatePromise, abortPromise]);
+        } else {
+          response = await generatePromise;
+        }
+
+        if (!response.text) {
+          throw new Error("Empty response from AI");
+        }
+        responseText = response.text;
       }
 
-      if (!response.text) {
-        throw new Error("Empty response from AI");
-      }
-
-      lastRawResponse = response.text;
+      lastRawResponse = responseText;
 
       // ── 1. Parse ────────────────────────────────────────────────
       const cleaned = lastRawResponse
@@ -230,7 +280,13 @@ export const generateTemplates = async (
         .replace(/[^\]\}]*$/s, "")
         .trim();
       
-      const parsed = JSON.parse(cleaned);
+      let parsed = JSON.parse(cleaned);
+
+      // Handle OpenAI/OpenRouter object wrapper
+      if ((settings.provider === 'openai' || settings.provider === 'openrouter') && parsed.templates) {
+        parsed = parsed.templates;
+      }
+
       const templates = Array.isArray(parsed) ? parsed : [parsed];
       
       // ── 2. Repair each template ─────────────────────────────────
