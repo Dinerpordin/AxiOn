@@ -1,5 +1,6 @@
 import { GoogleGenAI, Type, Schema } from '@google/genai';
 import { GenerationParams, QuestionTemplate, AppSettings } from '../types';
+import { repairTemplate, validateTemplate } from './template-validator';
 
 // Initialize the SDK. The API key MUST be provided via process.env.API_KEY
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY, vertexai: true });
@@ -11,13 +12,13 @@ const getQuestionTemplateSchema = (count: number): Schema => ({
     type: Type.OBJECT,
     properties: {
       id: { type: Type.STRING, description: "A unique alphanumeric or semantic string identifier (e.g., 'sset_math_001')." },
-      section: { type: Type.STRING, description: "e.g., 'Maths', 'English Section A', 'English Section B', 'English Section C'." },
+      section: { type: Type.STRING, description: "e.g., 'Maths', 'English Section A', 'English Section B', 'English Section C', 'English Section D'." },
       topic: { type: Type.STRING, description: "Must be an exact enum (e.g., 'Arithmetic', 'Geometry', 'English SPaG', 'English Comprehension', 'English Comparison')." },
       difficulty: { type: Type.STRING, description: "e.g., 'D1', 'D2', 'D3'." },
       template_stem: { type: Type.STRING, description: "The question text with variables wrapped in curly braces (e.g., '{TOTAL_CAKES}')." },
-      variable_bounds: {
+      variables: {
         type: Type.ARRAY,
-        description: "MUST be named 'variable_bounds'. Format: [{'name': 'A', 'min': 1, 'max': 10, 'step': 1}].",
+        description: "MUST be named 'variables'. Format: [{'name': 'A', 'min': 1, 'max': 10, 'step': 1}].",
         items: {
           type: Type.OBJECT,
           properties: {
@@ -71,24 +72,21 @@ const getQuestionTemplateSchema = (count: number): Schema => ({
       },
       status: { type: Type.STRING, description: "Always output 'published'" },
       multiSelect: { type: Type.BOOLEAN, description: "STRICTLY true or false" },
-      selectTwo: { type: Type.BOOLEAN, description: "STRICTLY true or false" }
+      selectTwo: { type: Type.BOOLEAN, description: "STRICTLY true or false" },
+      needs_visual_rebuild: { type: Type.BOOLEAN, description: "STRICTLY true or false" },
+      needs_variable_review: { type: Type.BOOLEAN, description: "STRICTLY true or false" }
     },
     required: [
       "id", "section", "topic", "difficulty", "template_stem",
-      "variable_bounds", "correct_answer_logic", "distractor_logic",
-      "constraints", "skill_tags", "status", "multiSelect", "selectTwo"
+      "variables", "correct_answer_logic", "distractor_logic",
+      "constraints", "skill_tags", "status", "multiSelect", "selectTwo",
+      "needs_visual_rebuild", "needs_variable_review"
     ]
   }
 });
 
-export const generateTemplates = async (
-  params: GenerationParams, 
-  settings: AppSettings,
-  onLog?: (msg: string, type?: 'info' | 'error' | 'success' | 'warning') => void,
-  abortSignal?: AbortSignal
-): Promise<QuestionTemplate[]> => {
-  
-  const prompt = `TASK: ${params.mainPrompt}
+function buildBasePrompt(params: GenerationParams): string {
+  return `TASK: ${params.mainPrompt}
 
 CRITICAL REQUIREMENT: You MUST generate EXACTLY ${params.count} question objects in the JSON array. Do not stop at 1. Generate all ${params.count} questions.
 
@@ -102,21 +100,24 @@ ${params.fewShotJson || 'None'}
 Your output must be a raw JSON array of exactly ${params.count} objects. You MUST NOT use Markdown wrappers (e.g., no \`\`\`json). You MUST use the exact keys and data types listed below. Any deviation will cause a fatal pipeline crash.
 
 ## 1. REQUIRED KEYS & TYPES
-Every question object MUST contain exactly these keys:
-- "id": (String) A unique alphanumeric or semantic string identifier (e.g., "sset_math_001").
-- "section": (String) e.g., "Maths", "English Section A".
-- "topic": (String) Must be an exact enum (e.g., "Arithmetic", "Geometry", "English SPaG", "English Comprehension", "English Comparison").
-- "difficulty": (String) e.g., "D1", "D2", "D3".
-- "template_stem": (String) The question text with variables wrapped in curly braces (e.g., "{TOTAL_CAKES}").
-- "variable_bounds": (Array of Objects) Format: [{"name": "A", "min": 1, "max": 10, "step": 1}].
-- "constraints": (Array of Strings) For Maths: Use modulo for clean division (e.g., "A % B == 0"). For English: Leave empty [].
-- "correct_answer_logic": (String) The mathematical formula or the index-mapped string array.
-- "distractor_logic": (Array of Objects) Format: [{"expr": "logic", "trap_label": "label", "misconception_tag": "tag"}].
-- "skill_tags": (Array of Strings) e.g., ["fractions", "addition"].
-- "status": (String) Always output "published".
-- "multiSelect": (Boolean) STRICTLY true or false. Do not use quotes.
-- "selectTwo": (Boolean) STRICTLY true or false. Do not use quotes.
-- "svg_template": (String or null) See SVG Rules below.
+Every template object must use exactly the field names listed below — snake_case throughout.
+- "id": "tpl-{unix_ms}-{batch_index}-{6char_hash}"
+- "section": "Maths" | "English Section A" | "English Section B" | "English Section C" | "English Section D"
+- "topic": "Arithmetic" | "Geometry" | "Algebra" | "Data Handling" | "Fractions, Decimals & Percentages" | "Measure" | "Ratio & Proportion" | "English SPaG" | "English Comprehension" | "English Comparison"
+- "difficulty": "D1" | "D2" | "D3"
+- "template_stem": "Question text. Placeholder vars in CAPS e.g. {NUM_A}."
+- "variables": [ { "name": "VAR", "min": 0, "max": 10, "step": 1 } ]
+- "constraints": [ "constraint expression string", "..." ]
+- "correct_answer_logic": The mathematical formula or the index-mapped string array.
+- "distractor_logic": [ {"expr": "logic", "trap_label": "label", "misconception_tag": "tag"} ]
+- "skill_tags": [ "tag1", "tag2" ]
+- "status": "published"
+- "multiSelect": false
+- "selectTwo": false
+- "svg_template": null
+- "visual_payload": null
+- "needs_visual_rebuild": false
+- "needs_variable_review": false
 
 ## 2. SVG RENDERING RULES (GEOMETRY/VISUALS)
 - If the question requires a visual diagram (e.g., Geometry, Area), output a raw, responsive SVG string in the "svg_template" key.
@@ -127,23 +128,68 @@ Every question object MUST contain exactly these keys:
 
 ## 3. INDEX-MAPPING FOR TEXT (ENGLISH QUESTIONS)
 - math.js cannot evaluate English strings in constraints. 
-- For text arrays, set "constraints": [] and define a pointer in "variable_bounds" (e.g., [{"name": "idx", "min": 0, "max": 3, "step": 1}]).
-- Put text arrays directly in the logic fields: "[\\"CorrectA\\", \\"CorrectB\\"][idx + 1]".
-  `;
+- For text arrays, set "constraints": [] and define a pointer in "variables" (e.g., [{"name": "idx", "min": 0, "max": 3, "step": 1}]).
+- Put text arrays directly in the logic fields: "[\\"CorrectA\\", \\"CorrectB\\"][idx + 1]".`;
+}
 
-  const MAX_RETRIES = 3;
-  let attempt = 0;
+function buildRetryPrompt(params: GenerationParams, errors: string[], attempt: number): string {
+  const errorBlock = errors.map((e, i) => ` ${i+1}. ${e}`).join("\n");
+
+  return `${buildBasePrompt(params)}
+
+--- RETRY INSTRUCTION (Attempt ${attempt + 1} of 3) ---
+Your previous output failed validation. Fix ALL errors below:
+
+${errorBlock}
+
+Common fixes:
+ • "[Passage text here]" → write a full 120+ word passage directly
+  in template_stem. No placeholders whatsoever.
+ • "hardcoded numbered options" → remove all 1./2./3./4. from stem.
+  Options live ONLY in correct_answer_logic and distractor_logic.
+ • "idx=0" or "index out of range":
+   WRONG:  ["a","b","c","d"][idx]
+   CORRECT: ["a","b","c","d"][idx+1]
+   WRONG:  [...][((idx+1)%4)]
+   CORRECT: [...][((idx+1)%4)+1]
+ • "distractor count" → distractor_logic must have EXACTLY 4 items.
+ • "invalid section/topic" → use only canonical pairs:
+   Maths + Arithmetic / Geometry / Algebra / Data Handling /
+        Fractions, Decimals & Percentages / Measure /
+        Ratio & Proportion
+   English Section A + English SPaG
+   English Section B + English Comprehension
+   English Section C + English Comprehension
+   English Section D + English Comparison
+--- END RETRY INSTRUCTION ---`;
+}
+
+export const generateTemplates = async (
+  params: GenerationParams, 
+  settings: AppSettings,
+  onLog?: (msg: string, type?: 'info' | 'error' | 'success' | 'warning') => void,
+  abortSignal?: AbortSignal
+): Promise<{ templates: QuestionTemplate[], warnings: { templateIndex: number, errors: string[] }[] }> => {
+  
+  const MAX_ATTEMPTS = 3;
+  let attempts = 0;
+  let lastErrors: string[] = [];
+  let lastRawResponse = "";
 
   const topicNames = params.selectedTopics.map(t => t.topic).join(', ');
   if (onLog) onLog(`Initiating generation for topics: "${topicNames}" (Count: ${params.count}, Difficulty: ${params.difficulty})`, 'info');
 
-  while (attempt < MAX_RETRIES) {
+  while (attempts < MAX_ATTEMPTS) {
     if (abortSignal?.aborted) throw new Error("Aborted by user");
     
     try {
       const modelName = settings.model || 'gemini-2.5-flash';
-      if (onLog) onLog(`Calling API using model: ${modelName} (Attempt ${attempt + 1}/${MAX_RETRIES})`, 'info');
+      if (onLog) onLog(`Calling API using model: ${modelName} (Attempt ${attempts + 1}/${MAX_ATTEMPTS})`, 'info');
       
+      const prompt = attempts === 0
+        ? buildBasePrompt(params)
+        : buildRetryPrompt(params, lastErrors, attempts);
+
       const generatePromise = ai.models.generateContent({
         model: modelName,
         contents: prompt,
@@ -176,45 +222,93 @@ Every question object MUST contain exactly these keys:
         throw new Error("Empty response from AI");
       }
 
-      const templates: QuestionTemplate[] = JSON.parse(response.text);
+      lastRawResponse = response.text;
+
+      // ── 1. Parse ────────────────────────────────────────────────
+      const cleaned = lastRawResponse
+        .replace(/^[^\[{]*/s, "")
+        .replace(/[^\]\}]*$/s, "")
+        .trim();
       
-      if (templates.length < params.count) {
-        if (onLog) onLog(`Warning: Requested ${params.count} templates, but AI only generated ${templates.length}.`, 'warning');
-      } else {
-        if (onLog) onLog(`Successfully generated ${templates.length} templates.`, 'success');
+      const parsed = JSON.parse(cleaned);
+      const templates = Array.isArray(parsed) ? parsed : [parsed];
+      
+      // ── 2. Repair each template ─────────────────────────────────
+      const repaired = templates.map(repairTemplate);
+
+      // ── 3. Validate each template independently ─────────────────
+      const validTemplates:  any[]                 = [];
+      const failedTemplates: { index: number; errors: string[] }[] = [];
+
+      for (const [i, tpl] of repaired.entries()) {
+        const errs = validateTemplate(tpl);
+        if (errs.length === 0) {
+          validTemplates.push({
+            ...tpl,
+            id: `tpl-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 9)}`,
+            status: 'pending'
+          });
+        } else {
+          failedTemplates.push({ index: i, errors: errs });
+          console.warn(`[generator] template[${i}] invalid (attempt ${attempts+1}):`, errs);
+        }
       }
 
-      // Ensure exactly 4 distractors, pending status, and UNIQUE IDs to prevent React key collisions
-      return templates.map((t, index) => ({
-        ...t,
-        id: `tpl-${Date.now()}-${index}-${Math.random().toString(36).substring(2, 9)}`, // Force unique ID
-        status: 'pending', // Force to pending so the UI review flow works
-        variable_bounds: t.variable_bounds || (t as any).variables || [], // Fallback just in case
-        distractor_logic: (t.distractor_logic || []).slice(0, 4)
-      }));
+      // ── 4. Return or retry ───────────────────────────────────────
+      if (validTemplates.length > 0 && failedTemplates.length === 0) {
+        // ── FULL SUCCESS ──
+        console.log(`[generator] All ${validTemplates.length} accepted on attempt ${attempts+1}`);
+        if (onLog) onLog(`[generator] All ${validTemplates.length} accepted on attempt ${attempts+1}`, 'success');
+        return { templates: validTemplates, warnings: [] };
+      }
+
+      if (validTemplates.length > 0 && failedTemplates.length > 0) {
+        // ── PARTIAL SUCCESS — return valid, report failures, NO retry ──
+        console.warn(
+          `[generator] Partial: ${validTemplates.length} valid, ` +
+          `${failedTemplates.length} failed. Returning valid set.`
+        );
+        if (onLog) onLog(`[generator] Partial: ${validTemplates.length} valid, ${failedTemplates.length} failed. Returning valid set.`, 'warning');
+        return {
+          templates: validTemplates,
+          warnings: failedTemplates.map(f => ({
+            templateIndex: f.index,
+            errors:    f.errors,
+          })),
+        };
+      }
+
+      // ── ZERO VALID — retry ──
+      lastErrors = failedTemplates.flatMap(f =>
+        f.errors.map(e => `[template ${f.index}] ${e}`)
+      );
+      console.warn(
+        `[generator] Zero valid on attempt ${attempts+1}/${MAX_ATTEMPTS}: ` +
+        `${lastErrors.length} total errors`
+      );
+      if (onLog) onLog(`[generator] Zero valid on attempt ${attempts+1}/${MAX_ATTEMPTS}: ${lastErrors.length} total errors`, 'warning');
 
     } catch (error: any) {
       if (error.message === "Aborted by user" || abortSignal?.aborted) {
         throw new Error("Aborted by user");
       }
       
-      attempt++;
-      console.error(`Error generating templates (attempt ${attempt}):`, error);
-      
-      if (attempt >= MAX_RETRIES) {
-        if (onLog) onLog(`Generation failed after ${MAX_RETRIES} attempts: ${error.message}`, 'error');
-        throw new Error(`Failed to generate templates after ${MAX_RETRIES} attempts: ${error.message}`);
-      }
-      
-      if (onLog) onLog(`Attempt ${attempt} failed: ${error.message}. Waiting 10 seconds before retrying to prevent rate limits...`, 'warning');
-      
-      // Interruptible 10-second wait
-      for (let w = 0; w < 100; w++) {
+      const msg = error instanceof Error ? error.message : String(error);
+      lastErrors = [`JSON parse or API error: ${msg}`];
+      console.warn(`[generator] Parse/API failed attempt ${attempts + 1}/${MAX_ATTEMPTS}: ${msg}`);
+      if (onLog) onLog(`[generator] Parse/API failed attempt ${attempts + 1}/${MAX_ATTEMPTS}: ${msg}`, 'error');
+    }
+    
+    attempts++;
+    
+    if (attempts < MAX_ATTEMPTS) {
+      // Interruptible wait before retry
+      for (let w = 0; w < 20; w++) { // 2 seconds
         if (abortSignal?.aborted) throw new Error("Aborted by user");
         await new Promise(resolve => setTimeout(resolve, 100));
       }
     }
   }
   
-  throw new Error("Unexpected error in generation loop");
+  throw new Error(`Generation failed after ${MAX_ATTEMPTS} attempts. Reasons: ${lastErrors.join(' | ')}`);
 };
