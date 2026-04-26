@@ -19,11 +19,12 @@ export interface TestResult {
 
 export interface QuestionTemplate {
   id: string;
-  section: 'Maths' | 'English Section A' | 'English Section B' | 'English Section C';
+  section: string;
   topic: string;
   difficulty: string;
   template_stem: string;
-  variable_bounds: VariableBound[];
+  variables: VariableBound[];
+  variable_bounds?: VariableBound[];
   constraints?: string[];
   correct_answer_logic: string;
   distractor_logic: DistractorLogic[];
@@ -37,6 +38,8 @@ export interface QuestionTemplate {
   status: 'pending' | 'approved' | 'rejected' | 'published';
   multiSelect: boolean;
   selectTwo: boolean;
+  needs_visual_rebuild?: boolean;
+  needs_variable_review?: boolean;
   testResult?: TestResult;
 }
 
