@@ -74,10 +74,32 @@ export const runMonteCarloTest = (template: QuestionTemplate): TestResult => {
   const variableBounds = template.variable_bounds || (template as any).variables || [];
   const distractorLogic = template.distractor_logic || [];
   const distractorCollisions = new Array(distractorLogic.length).fill(0);
+  
   const isEnglishSection = template.section.startsWith('English');
+  const hasIdx = variableBounds.some((v: any) => v.name === 'idx');
+  const isStaticEnglish = isEnglishSection && !hasIdx;
 
   if (!template.correct_answer_logic || template.correct_answer_logic.trim() === '') {
     return { passed: false, errors: ["Correct answer logic is empty."], lastRunTimestamp: Date.now() };
+  }
+
+  if (isStaticEnglish) {
+    // ── STATIC ENGLISH MODE ──
+    // No mathjs evaluation at all. Just check exprs are non-empty strings.
+    if (typeof template.correct_answer_logic !== "string" || !template.correct_answer_logic.trim()) {
+      errors.push("correct_answer_logic must be a non-empty string.");
+    }
+    distractorLogic.forEach((d: any, i: number) => {
+      const expr = typeof d === 'string' ? d : d?.expr;
+      if (typeof expr !== "string" || !expr.trim()) {
+        errors.push(`distractor[${i}] expr must be a non-empty string.`);
+      }
+    });
+    return {
+      passed: errors.length === 0,
+      errors,
+      lastRunTimestamp: Date.now()
+    };
   }
 
   const MAX_CONSTRAINTS_PER_VARIABLE = 5;
